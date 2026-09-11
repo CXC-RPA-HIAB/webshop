@@ -15,7 +15,7 @@ def setup_logging(
 ) -> logging.Logger:
     Path(log_file).parent.mkdir(parents=True, exist_ok=True)
 
-    logger = logging.getLogger("webshop_order")
+    logger = logging.getLogger("webshop")
     logger.setLevel(getattr(logging, log_level.upper(), logging.INFO))
     logger.handlers.clear()
     logger.propagate = False
@@ -44,7 +44,7 @@ def setup_logging(
 
 
 def get_logger() -> logging.Logger:
-    logger = logging.getLogger("webshop_order")
+    logger = logging.getLogger("webshop")
     if not logger.handlers:
         return setup_logging()
     return logger

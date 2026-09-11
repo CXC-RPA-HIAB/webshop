@@ -1,5 +1,5 @@
 """
-Webshop Order Robot — entry point.
+Webshop — entry point.
 
 process_emails():
   1. Google Sheets init
@@ -88,7 +88,7 @@ def run_unattended(max_orders: Optional[int] = None) -> int:
     config.set("webshop", "headless", "true" if force_headless else "false")
 
     cdp_port = config.getint("webshop", "cdp_port", fallback=9222)
-    logger.info("======= Webshop Order Robot v%s — UNATTENDED =======", VERSION)
+    logger.info("======= Webshop v%s — UNATTENDED =======", VERSION)
     logger.info(
         "Hidden Chrome session (CDP %s, headless=%s). "
         "Polling every %ss for MANUAL_PHASE=PROCESSING & ROBOT_PHASE empty "

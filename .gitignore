@@ -16,3 +16,6 @@ static/browser_profile/*
 !static/browser_profile/.gitkeep
 !.gitkeep
 static/codegen_profile/*
+
+*.md
+!README.md

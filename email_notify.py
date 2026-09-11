@@ -105,7 +105,7 @@ def notify_session_inactive(config=None, *, detail: str = "") -> bool:
     Notify configured recipients that the webshop session must be restored.
     """
     config = config or load_config()
-    bot_name = config.get("bot", "name", fallback="Webshop Order Robot")
+    bot_name = config.get("bot", "name", fallback="Webshop")
     subject = f"[ACTION REQUIRED] {bot_name}: webshop session inactive"
     body = (
         f"{bot_name} cannot continue — the Hiab webshop session is not active.\n"
@@ -123,5 +123,5 @@ def notify_session_inactive(config=None, *, detail: str = "") -> bool:
     )
     if detail:
         body += f"Details:\n{detail.strip()}\n\n"
-    body += "This message was sent automatically by the Webshop Order Robot.\n"
+    body += f"This message was sent automatically by {bot_name}.\n"
     return send_email(subject, body, config=config)

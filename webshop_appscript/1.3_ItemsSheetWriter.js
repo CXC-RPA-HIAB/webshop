@@ -1,6 +1,7 @@
 const ItemsSheetWriter = {
   // ITEMS layout: A EMAIL_ID, B CUSTOMER_NAME, C CUSTOMER_NUMBER,
-  // D ATTACHMENT_NAME, E ITEM_NAME, F ITEM_COUNT, G ITEM_STATUS, H MATCH_TYPE
+  // D ATTACHMENT_NAME, E ITEM_NAME, F ITEM_COUNT, G ITEM_STATUS, H MATCH_TYPE,
+  // I WEBSHOP_ITEM_STATUS (written by the Python robot, never by this script)
   HEADERS: [
     "EMAIL_ID",
     "CUSTOMER_NAME",
@@ -9,9 +10,10 @@ const ItemsSheetWriter = {
     "ITEM_NAME",
     "ITEM_COUNT",
     "ITEM_STATUS",
-    "MATCH_TYPE"
+    "MATCH_TYPE",
+    "WEBSHOP_ITEM_STATUS"
   ],
-  LAST_COLUMN: 8,
+  LAST_COLUMN: 9,
 
   ensureColumns: function(itemsSheet) {
     const maxColumns = itemsSheet.getMaxColumns();

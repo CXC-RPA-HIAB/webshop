@@ -6,12 +6,13 @@ import re
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
 import pandas as pd
 import gspread
 import requests
 from gspread.exceptions import APIError
+from gspread.utils import rowcol_to_a1
 
 from config_loader import load_config
 from logging_setup import get_logger
@@ -204,6 +205,96 @@ def set_timestamp_processed_at(
         stamp,
     )
     return stamp, row
+
+
+WEBSHOP_STATUS_OK = "exist"
+
+
+def _normalize_material(value: str) -> str:
+    text = str(value or "").strip().upper()
+    return text.lstrip("0") or text
+
+
+def _replacement_codes(item_status: str) -> List[str]:
+    """Codes from statuses like 'replaced (3393640->3393641)'."""
+    pairs = re.findall(r"([\w-]+)\s*->\s*([\w-]+)", str(item_status or ""))
+    return [code for pair in pairs for code in pair]
+
+
+def set_webshop_item_status(
+    items_sheet: gspread.Worksheet,
+    email_id: str,
+    failed_by_material: Dict[str, str],
+    config=None,
+) -> int:
+    """
+    Write WEBSHOP_ITEM_STATUS on every ITEMS row of email_id: the webshop error
+    text for refused materials, WEBSHOP_STATUS_OK for the rest.
+    Returns the number of rows updated.
+    """
+    email_id = (email_id or "").strip()
+    if not email_id:
+        raise ValueError("email_id is required to write WEBSHOP_ITEM_STATUS.")
+
+    values = items_sheet.get_all_values()
+    if not values:
+        raise LookupError("ITEMS sheet is empty; cannot write WEBSHOP_ITEM_STATUS.")
+
+    headers = values[0]
+    status_col = _get_col_idx(headers, "webshop_item_status")
+    idx_email = _get_col_idx(headers, "email_id") - 1
+    idx_item = _get_col_idx(headers, "item_name") - 1
+    idx_status = _get_col_idx(headers, "item_status") - 1
+
+    # BigQuery rewrites ITEM_NAME to the replacement material, while the webshop
+    # reports the original code from the attachment CSV — match on both.
+    failed = {_normalize_material(k): v for k, v in failed_by_material.items()}
+    matched: set[str] = set()
+    updates: List[dict] = []
+
+    for row_number, row in enumerate(values[1:], start=2):
+        if (row[idx_email].strip() if idx_email < len(row) else "") != email_id:
+            continue
+
+        item_name = row[idx_item] if idx_item < len(row) else ""
+        item_status = row[idx_status] if idx_status < len(row) else ""
+        keys = [_normalize_material(item_name)]
+        keys += [_normalize_material(code) for code in _replacement_codes(item_status)]
+
+        text = WEBSHOP_STATUS_OK
+        for key in keys:
+            if key in failed:
+                text = failed[key]
+                matched.add(key)
+                break
+
+        updates.append(
+            {"range": rowcol_to_a1(row_number, status_col), "values": [[text]]}
+        )
+
+    if not updates:
+        logger.warning(
+            "No ITEMS row found for email_id=%s; WEBSHOP_ITEM_STATUS not written.",
+            email_id,
+        )
+        return 0
+
+    unmatched = sorted(set(failed) - matched)
+    if unmatched:
+        logger.warning(
+            "Webshop refused material(s) with no ITEMS row for email_id=%s: %s",
+            email_id,
+            ", ".join(unmatched),
+        )
+
+    items_sheet.batch_update(updates)
+    logger.info(
+        "WEBSHOP_ITEM_STATUS email_id=%s -> %s row(s), %s refused by webshop.",
+        email_id,
+        len(updates),
+        len(matched),
+    )
+    return len(updates)
 
 
 def find_pending_orders(sheet: gspread.Worksheet,config=None) -> pd.DataFrame:

@@ -66,6 +66,15 @@ def open_main_sheet(client: gspread.Client, config=None) -> gspread.Worksheet:
     return worksheet
 
 
+def open_items_sheet(main_sheet: gspread.Worksheet, config=None) -> gspread.Worksheet:
+    """Open the ITEMS worksheet from the spreadsheet MAIN already belongs to."""
+    config = config or load_config()
+    name = config.get("spreadsheets", "items_sheet_name", fallback="ITEMS")
+    worksheet = main_sheet.spreadsheet.worksheet(name)
+    logger.info("Opened spreadsheet sheet: %s", worksheet.title)
+    return worksheet
+
+
 def init_connections(
     config=None,
 ) -> Tuple[gspread.Client, gspread.Worksheet]:

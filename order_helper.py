@@ -8,7 +8,7 @@ import traceback
 from pathlib import Path
 from typing import Optional
 import pandas as pd
-from auth import init_connections
+from auth import init_connections, open_items_sheet
 from config_loader import batch_max_rows, ensure_runtime_dirs, load_config
 from csv_utils import prepare_batch_payload
 from logging_setup import get_logger
@@ -19,6 +19,7 @@ from spreadsheet_processing import (
     set_manual_phase,
     set_robot_phase,
     set_timestamp_processed_at,
+    set_webshop_item_status,
 )
 
 # Import the bot (adjust path if you haven't moved it to webshop/bot.py yet)
@@ -106,7 +107,7 @@ def process_single_order(
             profile = ProfileHandler(config)
             profile.start()
         
-        webshop_orchestration(
+        failed_items = webshop_orchestration(
             page=profile.page,
             context=profile.context,
             order=order,
@@ -114,7 +115,23 @@ def process_single_order(
             config=config,
             on_phase=on_phase,
             require_existing_session=require_existing_session,
-        )
+        ) or {}
+
+        if failed_items:
+            logger.warning(
+                "Webshop rejected %s item(s) for email_id=%s: %s",
+                len(failed_items), email_id, failed_items,
+            )
+        try:
+            on_phase("PROCESSING", "Writing webshop item status")
+            written = set_webshop_item_status(
+                open_items_sheet(sheet, config), email_id, failed_items, config,
+            )
+            logger.info("WEBSHOP_ITEM_STATUS written for %s ITEMS row(s).", written)
+        except Exception as exc:
+            logger.warning(
+                "Could not write WEBSHOP_ITEM_STATUS for email_id=%s: %s", email_id, exc
+            )
 
         # Mark as finished
         order["row_number"] = set_robot_phase(

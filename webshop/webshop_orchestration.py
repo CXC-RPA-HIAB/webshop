@@ -23,6 +23,41 @@ import pandas as pd
 logger = get_logger()
 PhaseCallback = Callable[[str, str], None]
 
+FAILED_CONTAINER = "#uc-failed-orderlines"
+
+
+def collect_failed_orderlines(page: Page) -> dict[str, str]:
+    """Read the 'items have not been uploaded' panel -> {material: webshop error text}."""
+    container = page.locator(FAILED_CONTAINER).first
+    try:
+        if container.count() == 0 or not container.is_visible():
+            return {}
+    except Exception:
+        return {}
+
+    found: dict[str, str] = {}
+    lines = container.locator(".batchorder-orderline.failed-orderline")
+    try:
+        line_count = lines.count()
+    except Exception:
+        return {}
+
+    for index in range(line_count):
+        line = lines.nth(index)
+        try:
+            material = (line.get_attribute("data-line-item") or "").strip()
+            if not material:
+                continue
+            block = line.locator("p.batchorder-orderline-error-block").first
+            text = (block.inner_text(timeout=2000) or "").strip() if block.count() > 0 else ""
+        except Exception:
+            continue
+        found[material] = text or "not uploaded"
+
+    if found:
+        logger.info("Webshop did not upload %s item(s): %s", len(found), found)
+    return found
+
 
 def webshop_orchestration(
     page: Page,
@@ -32,11 +67,12 @@ def webshop_orchestration(
     config=None,
     on_phase: Optional[PhaseCallback] = None,
     require_existing_session: bool = False,
-) -> None:
+) -> dict[str, str]:
     """
     Executes the entire webshop batch order process in a single procedural flow.
     Includes browser startup, session check, impersonation, cart creation, 
     file uploads, and browser teardown inline.
+    Returns {material: webshop error text} for items the webshop refused to upload.
     """
     cfg = config or load_config()
 
@@ -241,6 +277,7 @@ def webshop_orchestration(
 
     #  _upload_and_add_to_cart (Loop for multiple files)
     total = len(paths)
+    failed_by_material: dict[str, str] = {}
     for index, csv_path in enumerate(paths, start=1):
         
         logger.info(f"Batch upload {index}/{total}: {csv_path.name}")
@@ -286,6 +323,9 @@ def webshop_orchestration(
         else:
             raise TimeoutError(f"Add to cart stayed disabled after upload of {csv_path.name}.")
 
+        # Panel renders either right after the file is parsed or after add to cart.
+        failed_by_material.update(collect_failed_orderlines(page))
+
         add_btn.click()
         
         #  _wait_loaded
@@ -295,5 +335,8 @@ def webshop_orchestration(
             pass
         time.sleep(2.0)
 
+        failed_by_material.update(collect_failed_orderlines(page))
+
     logger.info("Batch order flow completed for client %s.", client_number)
+    return failed_by_material
     

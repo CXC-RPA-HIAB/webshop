@@ -15,6 +15,15 @@ function validateMaterials() {
     return; 
   }
 
+  ItemsSheetWriter.ensureColumns(itemsSheet);
+  const itemIndexes = ItemsSheetWriter.headerIndexes(itemsSheet);
+  const emailIdIdx = itemIndexes.EMAIL_ID;
+  const itemNameIdx = itemIndexes.ITEM_NAME;
+
+  if (emailIdIdx === undefined || itemNameIdx === undefined) {
+    Logger.log("validate_materials: ITEMS sheet is missing EMAIL_ID or ITEM_NAME headers");
+    return;
+  }
 
   // Start from row 2 (index 1) to skip headers
   for (let i = 1; i < mainData.length; i++) {
@@ -36,11 +45,11 @@ function validateMaterials() {
         // 3: Extracting items for emailid
         try {
           for (let j = 1; j < itemsData.length; j++) {
-            if (itemsData[j][0] === emailId) {
+            if (itemsData[j][emailIdIdx] === emailId) {
               emailItems.push({ 
-                ITEM_NAME: itemsData[j][2], 
-                CUSTOMER_NUMBER: customerNumber, // Taken from Column C
-                CUSTOMER_NAME: customerName      // Taken from Column D
+                ITEM_NAME: String(itemsData[j][itemNameIdx] || "").trim(),
+                CUSTOMER_NUMBER: customerNumber,
+                CUSTOMER_NAME: customerName
               }); 
               itemRowIndexes.push(j + 1);
             }

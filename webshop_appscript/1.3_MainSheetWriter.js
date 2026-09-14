@@ -99,13 +99,18 @@ updateSmartChip: function(rowIndex, colIndex, fileUrl) {
     }
 
     ItemsSheetWriter.ensureColumns(itemsSheet);
-    
+
+    // A EMAIL_ID, B CUSTOMER_NAME, C CUSTOMER_NUMBER, D ATTACHMENT_NAME,
+    // E ITEM_NAME, F ITEM_COUNT, G ITEM_STATUS, H MATCH_TYPE
     const rowsToWrite = parsedItems.map(item => [
       emailId,
+      item.FULL_NAME || item.CUSTOMER_NAME || "",
+      item.CUSTOMER_NUMBER || "",
       attachmentName,
       item.ITEM_NAME,
       item.ITEM_COUNT,
-      "PENDING_BQ" // Sets state for the second trigger to pick up
+      CONFIG.ITEM_STATUS.PENDING_BQ,
+      ""
     ]);
     
     itemsSheet.insertRowsAfter(1, rowsToWrite.length);

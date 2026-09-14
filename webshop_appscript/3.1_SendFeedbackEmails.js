@@ -44,10 +44,28 @@ function processFeedbackEmails() {
 
             const itemsSheet = ss.getSheetByName(CONFIG.SHEETS.ITEMS);
             if (itemsSheet) {
+              ItemsSheetWriter.ensureColumns(itemsSheet);
+              const indexes = ItemsSheetWriter.headerIndexes(itemsSheet);
               const itemsData = itemsSheet.getDataRange().getValues();
-              for(let j = 1; j < itemsData.length; j++) {
-                if (itemsData[j][0] === emailId && String(itemsData[j][4]).trim() === "INVALID_BQ") {
-                  actualInvalidItems.push(String(itemsData[j][2]).trim());
+              const emailIdIdx = indexes.EMAIL_ID;
+              const itemNameIdx = indexes.ITEM_NAME;
+              const itemStatusIdx = indexes.ITEM_STATUS;
+              const matchTypeIdx = indexes.MATCH_TYPE;
+
+              for (let j = 1; j < itemsData.length; j++) {
+                if (itemsData[j][emailIdIdx] !== emailId) continue;
+
+                const status = String(itemsData[j][itemStatusIdx] || "").trim();
+                const matchType = String(itemsData[j][matchTypeIdx] || "").trim();
+                const itemName = String(itemsData[j][itemNameIdx] || "").trim();
+
+                const gateOk = status === CONFIG.ITEM_STATUS.VALID ||
+                  (status.indexOf(CONFIG.ITEM_STATUS.REPLACED + " (") === 0 && status.indexOf(" / ") === -1);
+                const matchOk = matchType === CONFIG.MATCH_TYPE.STANDARD ||
+                  matchType.indexOf(CONFIG.MATCH_TYPE.GBO + " (") === 0;
+
+                if (!gateOk || !matchOk || matchType.indexOf(CONFIG.MATCH_TYPE.FAILED) === 0) {
+                  actualInvalidItems.push({ item: itemName, status: status, matchType: matchType });
                 }
               }
             }

@@ -42,33 +42,68 @@ const EmailNotifier = {
         } 
         else if (res.status === 'ITEM_ERROR') {
           allSuccess = false;
-          let itemErrors = [];
-          
 
           let clientNotFound = false;
           let clientIdNotFound = false;
           let nameMismatchError = null;
+          const byStatus = {};
 
-          res.invalidItems.forEach(item => {
-            if (item.includes("CLIENT_ERROR - MISSING_ID")) {
-              clientIdNotFound = true;
-            } else if (item.includes("CLIENT_ERROR - WRONG_NAME")) {
-              nameMismatchError = item.split("WRONG_NAME: ")[1];
-            } else if (item.includes("CLIENT_ERROR - CLIENT_NOT_FOUND")) {
-              clientNotFound = true;
-            } else {
-              itemErrors.push(item);
+          (res.invalidItems || []).forEach(entry => {
+            if (typeof entry === "string") {
+              if (entry.includes("CLIENT_ERROR - MISSING_ID")) {
+                clientIdNotFound = true;
+              } else if (entry.includes("CLIENT_ERROR - WRONG_NAME")) {
+                nameMismatchError = entry.split("WRONG_NAME: ")[1];
+              } else if (entry.includes("CLIENT_ERROR - CLIENT_NOT_FOUND")) {
+                clientNotFound = true;
+              } else {
+                if (!byStatus["unknown"]) byStatus["unknown"] = [];
+                byStatus["unknown"].push(entry);
+              }
+              return;
             }
+
+            const itemName = entry.item || "";
+            const status = entry.status || "unknown";
+            const matchType = entry.matchType || "";
+
+            if (matchType.indexOf("failed (client:") === 0) {
+              if (matchType.includes("MISSING_ID")) clientIdNotFound = true;
+              else if (matchType.includes("WRONG_NAME")) nameMismatchError = matchType;
+              else if (matchType.includes("CLIENT_NOT_FOUND")) clientNotFound = true;
+              return;
+            }
+
+            const label = status || matchType || "unknown";
+            if (!byStatus[label]) byStatus[label] = [];
+            byStatus[label].push(matchType ? `${itemName} [${matchType}]` : itemName);
           });
 
           let errorMessages = [];
           if (clientNotFound) { errorMessages.push("Client ID was not found."); }
           if (clientIdNotFound) { errorMessages.push("Client ID is missing from the file."); }
           if (nameMismatchError) { errorMessages.push(`<span style="color: orange;">Client Name mismatch. ${nameMismatchError}</span>`); }
-          
-          if (itemErrors.length > 0) {
-            errorMessages.push(`The following items were not found: <br><b>${itemErrors.join(', ')}</b>`);
-          }
+
+          Object.keys(byStatus).forEach(statusKey => {
+            const items = byStatus[statusKey];
+            if (statusKey === CONFIG.ITEM_STATUS.NOT_IN_BQ) {
+              errorMessages.push(`The following items were not found in BigQuery: <br><b>${items.join(', ')}</b>`);
+            } else if (statusKey === CONFIG.ITEM_STATUS.OBSOLETE) {
+              errorMessages.push(`The following items are obsolete: <br><b>${items.join(', ')}</b>`);
+            } else if (statusKey === CONFIG.ITEM_STATUS.BLOCKED) {
+              errorMessages.push(`The following items are blocked for sale: <br><b>${items.join(', ')}</b>`);
+            } else if (statusKey === CONFIG.ITEM_STATUS.NO_GLOBAL_PRICE) {
+              errorMessages.push(`The following items have no global price: <br><b>${items.join(', ')}</b>`);
+            } else if (statusKey.indexOf(CONFIG.ITEM_STATUS.REPLACED) === 0) {
+              errorMessages.push(`The following items were replaced / need review (${statusKey}): <br><b>${items.join(', ')}</b>`);
+            } else if (statusKey === CONFIG.ITEM_STATUS.ANOTHER_PROBLEM) {
+              errorMessages.push(`The following items need webshop support: <br><b>${items.join(', ')}</b>`);
+            } else if (statusKey === CONFIG.ITEM_STATUS.VALID || statusKey.indexOf(CONFIG.ITEM_STATUS.REPLACED + " (") === 0) {
+              errorMessages.push(`The following items failed market/GPO match: <br><b>${items.join(', ')}</b>`);
+            } else {
+              errorMessages.push(`The following items failed (${statusKey}): <br><b>${items.join(', ')}</b>`);
+            }
+          });
 
           body += `<span style="color: #E06666;">${errorMessages.join('<br>')}</span>`;
         }

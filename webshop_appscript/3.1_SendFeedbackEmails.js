@@ -1,3 +1,42 @@
+// Reads the "replaced (OLD->NEW)" statuses written by the SAP gate for one email.
+function collectReplacedItems(ss, emailId) {
+  const itemsSheet = ss.getSheetByName(CONFIG.SHEETS.ITEMS);
+  if (!itemsSheet) return [];
+
+  ItemsSheetWriter.ensureColumns(itemsSheet);
+  const indexes = ItemsSheetWriter.headerIndexes(itemsSheet);
+  const emailIdIdx = indexes.EMAIL_ID;
+  const itemNameIdx = indexes.ITEM_NAME;
+  const itemStatusIdx = indexes.ITEM_STATUS;
+  if (emailIdIdx === undefined || itemStatusIdx === undefined) return [];
+
+  const itemsData = itemsSheet.getDataRange().getValues();
+  const prefix = CONFIG.ITEM_STATUS.REPLACED + " (";
+  const replaced = [];
+
+  for (let j = 1; j < itemsData.length; j++) {
+    if (itemsData[j][emailIdIdx] !== emailId) continue;
+
+    const status = String(itemsData[j][itemStatusIdx] || "").trim();
+    if (status.indexOf(prefix) !== 0 || status.indexOf(" / ") !== -1) continue;
+
+    const chain = status.substring(prefix.length, status.indexOf(")"));
+    const steps = chain.split(",").map(step => step.trim()).filter(step => step);
+    if (steps.length === 0) continue;
+
+    const warning = status.match(/\[warning: (.+)\]$/);
+
+    replaced.push({
+      originalItem: steps[0].split("->")[0].trim(),
+      currentItem: String(itemsData[j][itemNameIdx] || "").trim(),
+      chain: chain,
+      warning: warning ? warning[1] : ""
+    });
+  }
+
+  return replaced;
+}
+
 function processFeedbackEmails() {
   const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   const mainSheet = ss.getSheetByName(CONFIG.SHEETS.MAIN);
@@ -26,7 +65,8 @@ function processFeedbackEmails() {
 
         let results = [];
         let generalError = null;
-        let targetBaseLabelName = ""; 
+        let targetBaseLabelName = "";
+        const replacedItems = collectReplacedItems(ss, emailId);
         // ERROR handler
         if (manualPhase === "ERROR") {
           targetBaseLabelName = CONFIG.LABELS.ERROR; 
@@ -70,7 +110,7 @@ function processFeedbackEmails() {
               }
             }
             
-            results.push({ name: attachmentName, status: 'ITEM_ERROR', invalidItems: actualInvalidItems });
+            results.push({ name: attachmentName, status: 'ITEM_ERROR', invalidItems: actualInvalidItems, replacedItems: replacedItems });
             
           } else if (errorMessage.includes("Unsupported file format") || errorMessage.includes("missing") || errorMessage.includes("incorrect")) {
              results.push({ name: attachmentName, status: 'FATAL', error: errorMessage });
@@ -80,10 +120,20 @@ function processFeedbackEmails() {
         }
         else if (robotPhase === "FINISHED") {
           targetBaseLabelName = CONFIG.LABELS.FINISHED; 
-          results.push({ name: attachmentName, status: 'SUCCESS' });
+          results.push({ name: attachmentName, status: 'SUCCESS', replacedItems: replacedItems });
         }
 
         EmailNotifier.sendFeedback(message, clientEmail, customerName, results, generalError);
+
+        if (replacedItems.length > 0) {
+          EmailNotifier.notifyInternalReplacements({
+            emailId: emailId,
+            customerName: customerName,
+            customerNumber: String(data[i][2] || "").trim(),
+            attachmentName: attachmentName,
+            replacedItems: replacedItems
+          });
+        }
 
 
         function getOrCreateLabel(labelName) {

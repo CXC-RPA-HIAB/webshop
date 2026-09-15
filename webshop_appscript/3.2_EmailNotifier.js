@@ -107,7 +107,15 @@ const EmailNotifier = {
 
           body += `<span style="color: #E06666;">${errorMessages.join('<br>')}</span>`;
         }
-        
+
+        if (res.replacedItems && res.replacedItems.length > 0) {
+          const replacedList = res.replacedItems
+            .map(entry => `${entry.originalItem} &rarr; ${entry.currentItem}`)
+            .join(', ');
+
+          body += `<br><span style="color: #B45F06;"><b>Notice:</b> the following items were discontinued and processed with their successors: <b>${replacedList}</b></span>`;
+        }
+
         body += `</li><br>`;
       });
       
@@ -153,6 +161,49 @@ const EmailNotifier = {
     const notifiedLabel = GmailApp.getUserLabelByName(CONFIG.LABELS.NOTIFIED);
     if (notifiedLabel) {
       message.getThread().addLabel(notifiedLabel);
+    }
+  },
+
+  notifyInternalReplacements: function(info) {
+    const replacedItems = info.replacedItems || [];
+    if (replacedItems.length === 0) return;
+
+    const rows = replacedItems.map(entry => `
+      <tr>
+        <td style="padding: 4px 10px; border: 1px solid #dddddd;">${entry.originalItem}</td>
+        <td style="padding: 4px 10px; border: 1px solid #dddddd;">${entry.currentItem}</td>
+        <td style="padding: 4px 10px; border: 1px solid #dddddd;">${entry.chain}</td>
+        <td style="padding: 4px 10px; border: 1px solid #dddddd; color: #E06666;">${entry.warning || ""}</td>
+      </tr>`).join('');
+
+    const body = `
+      <p>Items in the order below were discontinued in SAP and processed with their successors.</p>
+      <p>
+        <b>Customer:</b> ${info.customerName || ""} (${info.customerNumber || "no number"})<br>
+        <b>File:</b> ${info.attachmentName || ""}<br>
+        <b>Email ID:</b> ${info.emailId || ""}
+      </p>
+      <table style="border-collapse: collapse; font-size: 13px;">
+        <tr>
+          <th style="padding: 4px 10px; border: 1px solid #dddddd;">Ordered item</th>
+          <th style="padding: 4px 10px; border: 1px solid #dddddd;">Processed item</th>
+          <th style="padding: 4px 10px; border: 1px solid #dddddd;">Replacement chain</th>
+          <th style="padding: 4px 10px; border: 1px solid #dddddd;">Warning on successor</th>
+        </tr>
+        ${rows}
+      </table>
+      <p style="color: #777777; font-size: 12px;">Automatic notification from the HIAB deals system.</p>
+    `;
+
+    try {
+      MailApp.sendEmail({
+        to: CONFIG.TARGET_EMAIL,
+        subject: `Webshop robot - item replacements (${info.customerName || "unknown customer"})`,
+        htmlBody: body,
+        name: "Hiab Deals Automation"
+      });
+    } catch (error) {
+      Logger.log(`Internal replacement notification failed for ${info.emailId}: ${error.message}`);
     }
   }
 };

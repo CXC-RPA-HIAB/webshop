@@ -2,6 +2,19 @@ const BigQueryValidator = {
   PROJECT_ID: 'h-apivp-0001-p',
   MAX_REPLACEMENT_HOPS: 3,
 
+  SAP_SPART: ['20', '99'],
+  SAP_EXTWG: [
+    'ACC00',
+    'DEP00', 'DEP01', 'DEP02', 'DEP03', 'DEP04',
+    'FCP00', 'FCP01', 'FCP02',
+    'LCP00', 'LCP01', 'LCP02', 'LCP03', 'LCP04', 'LCP05', 'LCP06', 'LCP07',
+    'SPR00', 'SPR01', 'SPR02', 'SPR03',
+    'TLP00',
+    'TLS00', 'TLS01', 'TLS02', 'TLS05',
+    'TMP00', 'TMP01', 'TMP02', 'TMP03', 'TMP04', 'TMP05', 'TMP06', 'TMP07',
+    'TMP08', 'TMP09', 'TMP10', 'TMP11', 'TMP12', 'TMP13', 'TMP14', 'TMP15'
+  ],
+
   sqlString: function(value) {
     return String(value || "").replace(/\\/g, "\\\\").replace(/'/g, "\\'");
   },
@@ -49,7 +62,7 @@ const BigQueryValidator = {
     if (salesBlock.indexOf("Z") === 0) {
       return { status: CONFIG.ITEM_STATUS.BLOCKED, globalBlock: globalBlock, needsReplacement: false };
     }
-    if (zglpRate === null || zglpRate === undefined || zglpRate === "") {
+    if (zglpRate === null || zglpRate === undefined || zglpRate === "" || !(parseFloat(zglpRate) > 0)) {
       return { status: CONFIG.ITEM_STATUS.NO_GLOBAL_PRICE, globalBlock: globalBlock, needsReplacement: false };
     }
 
@@ -60,37 +73,62 @@ const BigQueryValidator = {
     if (!codes || codes.length === 0) return {};
 
     const inputItems = this.quoteList(codes);
+    const spartList = this.quoteList(this.SAP_SPART);
+    const extwgList = this.quoteList(this.SAP_EXTWG);
     const project = CONFIG.BQ_PROJECT_ID;
     const sql = `
       WITH input AS (
         SELECT input_code FROM UNNEST([${inputItems}]) AS input_code
       ),
       zglp AS (
-        SELECT a927.matnr,
-               MAX(CASE WHEN konp.kpein > 0
-                        THEN CAST(konp.kbetr AS FLOAT64) / CAST(konp.kpein AS INT64) END) AS rate
-        FROM \`${project}.sap.a927\` a927
-        JOIN \`${project}.sap.konp\` konp ON a927.knumh = konp.knumh
-        WHERE CURRENT_DATE() BETWEEN DATE(a927.datab) AND DATE(a927.datbi)
-        GROUP BY a927.matnr
+        SELECT matnr, kbetr, kpein, kmein, datab, datbi
+        FROM (
+          SELECT a927.matnr,
+                 konp.kbetr,
+                 konp.kpein,
+                 konp.kmein,
+                 a927.datab,
+                 a927.datbi,
+                 ROW_NUMBER() OVER (PARTITION BY a927.matnr ORDER BY a927.datab DESC) AS rn
+          FROM \`${project}.sap.a927\` a927
+          LEFT JOIN \`${project}.sap.konp\` konp ON a927.knumh = konp.knumh
+          WHERE CURRENT_DATE() BETWEEN DATE(a927.datab) AND DATE(a927.datbi)
+        )
+        WHERE rn = 1
       )
       SELECT
         i.input_code,
         COUNT(DISTINCT mara.matnr) AS material_matches,
-        MAX(mara.matnr)            AS material_number,
-        MAX(mara.mstae)            AS global_block,
-        MAX(mvke.vmsta)            AS edc_sales_block,
-        MAX(zglp.rate)             AS zglp_rate,
-        MAX(makt.maktx)            AS material_description
+        MAX(mara.matnr)            AS material_number,      -- Material code (SAP IH09 Basic Data)
+        MAX(makt.maktx)            AS material_description, -- Description (SAP IH09 Basic Data)
+        MAX(mara.labor)            AS lab_office,           -- LO (SAP IH09 Basic Data)
+        MAX(mara.mstae)            AS global_block,         -- X-plant mtl status (SAP IH09)
+        MAX(mara.matkl)            AS sigs_code,            -- SIGS (SAP ZMM_01)
+        MAX(mara.ersda)            AS sap_creation_date,    -- Created (SAP IH09 Basic Data)
+        MAX(CASE WHEN zglp.kpein > 0
+                 THEN CAST(zglp.kbetr AS FLOAT64) / CAST(zglp.kpein AS INT64)
+                 ELSE 0.0 END)     AS zglp_rate,            -- ZGLP rate
+        MAX(zglp.kpein)            AS zglp_unit,            -- Pricing unit
+        MAX(zglp.kmein)            AS zglp_uom,             -- Unit of measure
+        MAX(zglp.datab)            AS zglp_date_from,       -- Date from
+        MAX(zglp.datbi)            AS zglp_date_to,         -- Date to
+        MAX(mvke_edc.vmsta)        AS edc_sales_block,      -- Distribution-chain-specific material status
+        MAX(marc_edc.mmsta)        AS edc_purchase_block,   -- Plant-specific material status
+        MAX(mard_edc.labst)        AS edc_inv_balance       -- EDC inventory balance
       FROM input i
       LEFT JOIN \`${project}.sap.mara\` mara
         ON LTRIM(mara.matnr, '0') = LTRIM(i.input_code, '0')
-       AND mara.spart IN ('20', '99')
-      LEFT JOIN \`${project}.sap.mvke\` mvke
-        ON mvke.matnr = mara.matnr AND mvke.vkorg = 'FI61'
-      LEFT JOIN zglp ON zglp.matnr = mara.matnr
+       AND mara.spart IN (${spartList})
+       AND mara.extwg IN (${extwgList})
       LEFT JOIN \`${project}.sap.makt\` makt
         ON makt.matnr = mara.matnr AND makt.spras = 'E'
+      LEFT JOIN \`${project}.sap.mard\` mard_edc
+        ON mard_edc.matnr = mara.matnr AND mard_edc.werks = 'FI63' AND mard_edc.lgort = '1100'
+      LEFT JOIN \`${project}.sap.mvke\` mvke_edc
+        ON mvke_edc.matnr = mara.matnr AND mvke_edc.vkorg = 'FI61'
+      LEFT JOIN \`${project}.sap.marc\` marc_edc
+        ON marc_edc.matnr = mara.matnr AND marc_edc.werks = 'FI63'
+      LEFT JOIN zglp ON zglp.matnr = mara.matnr
       GROUP BY i.input_code
     `;
 
@@ -108,10 +146,19 @@ const BigQueryValidator = {
         byCode[inputCode] = {
           materialMatches: this.bqValue(row, 1),
           materialNumber: this.bqValue(row, 2),
-          globalBlock: this.bqValue(row, 3),
-          edcSalesBlock: this.bqValue(row, 4),
-          zglpRate: (row.f[5] && row.f[5].v != null) ? row.f[5].v : null,
-          materialDescription: this.bqValue(row, 6)
+          materialDescription: this.bqValue(row, 3),
+          labOffice: this.bqValue(row, 4),
+          globalBlock: this.bqValue(row, 5),
+          sigsCode: this.bqValue(row, 6),
+          sapCreationDate: this.bqValue(row, 7),
+          zglpRate: (row.f[8] && row.f[8].v != null) ? row.f[8].v : null,
+          zglpUnit: this.bqValue(row, 9),
+          zglpUom: this.bqValue(row, 10),
+          zglpDateFrom: this.bqValue(row, 11),
+          zglpDateTo: this.bqValue(row, 12),
+          edcSalesBlock: this.bqValue(row, 13),
+          edcPurchaseBlock: this.bqValue(row, 14),
+          edcInvBalance: this.bqValue(row, 15)
         };
       });
     }
@@ -169,6 +216,7 @@ const BigQueryValidator = {
       item.resolvedItemName = item.ITEM_NAME;
       item.originalItemName = item.ITEM_NAME;
       item.replacementChain = [];
+      item.replacementWarning = "";
       item.itemStatus = "";
       item.sapGatePassed = false;
     });
@@ -195,16 +243,14 @@ const BigQueryValidator = {
           const chainText = item.replacementChain
             .map(step => `${step.from}->${step.to}`)
             .join(", ");
-          const replacedPrefix = `${CONFIG.ITEM_STATUS.REPLACED} (${chainText})`;
-          if (evaluated.status === CONFIG.ITEM_STATUS.VALID) {
-            item.itemStatus = replacedPrefix;
-            item.sapGatePassed = true;
-            item.isValid = true;
-          } else {
-            item.itemStatus = `${replacedPrefix} / ${evaluated.status}`;
-            item.sapGatePassed = false;
-            item.isValid = false;
-          }
+          // A resolved successor always passes the gate; any remaining issue on the
+          // successor is reported as a warning instead of rejecting the item.
+          item.replacementWarning = evaluated.status === CONFIG.ITEM_STATUS.VALID ? "" : evaluated.status;
+          item.itemStatus = item.replacementWarning
+            ? `${CONFIG.ITEM_STATUS.REPLACED} (${chainText}) [warning: ${item.replacementWarning}]`
+            : `${CONFIG.ITEM_STATUS.REPLACED} (${chainText})`;
+          item.sapGatePassed = true;
+          item.isValid = true;
         } else {
           item.itemStatus = evaluated.status;
           item.sapGatePassed = evaluated.status === CONFIG.ITEM_STATUS.VALID;
@@ -235,7 +281,7 @@ const BigQueryValidator = {
           return;
         }
 
-        const newPart = String(repl.newParts).trim().toUpperCase();
+        const newPart = this.normalizeKey(String(repl.newParts).trim().toUpperCase());
         item.replacementChain.push({ from: oldCode, to: newPart });
         item.resolvedItemName = newPart;
         item.ITEM_NAME = newPart;
@@ -277,6 +323,7 @@ const BigQueryValidator = {
       item.resolvedCustomerNumber = "";
       item.matchType = "";
       item.itemStatus = "";
+      item.replacementWarning = "";
       item.resolvedItemName = item.ITEM_NAME;
     });
 

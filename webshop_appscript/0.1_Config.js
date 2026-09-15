@@ -51,4 +51,23 @@ PHASES: {
     FAILED: "failed"
   },
 
+  // EMAIL_FEEDBACK (column J) state machine: PENDING -> INTERNAL_SENT -> DONE
+  FEEDBACK_STATES: {
+    PENDING: "NO",
+    INTERNAL_SENT: "INTERNAL_SENT",
+    DONE: "NOTIFIED"
+  },
+
+  // Written by the Python robot into WEBSHOP_ITEM_STATUS for accepted materials
+  WEBSHOP_ITEM_STATUS_OK: "exist",
+
+  CLIENT_ERRORS: {
+    MISSING_ID: "MISSING_ID",
+    NOT_FOUND: "CLIENT_NOT_FOUND",
+    WRONG_NAME: "WRONG_NAME",
+    NO_EMAIL: "NO_CUSTOMER_EMAIL"
+  },
+
+  CUSTOMER_LIST_LIMIT: 25
+
 };

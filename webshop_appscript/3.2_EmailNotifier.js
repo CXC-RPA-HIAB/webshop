@@ -1,173 +1,53 @@
 const EmailNotifier = {
 
-  sendFeedback: function(message, clientEmail, cscName, results, generalError = null) {
-    let body = `<p>Hello ${cscName},</p>`;
+  LOGO_FOLDER_ID: "1Ry0zPOQdTPAu10jXfK9MBWoqkr1kw7KM",
+  LOGO_FILE_NAME: "hiab-text-logo.png",
+  SENDER_NAME: "Hiab Deals Automation",
 
-    // If generalError has text in it, it will print it. Otherwise it moves to the success logic.
-    if (generalError) {
-      body += `<p>There was a problem processing your request:</p>`;
-      
-      // We convert it to a string just in case to prevent [object Object] crashes
-      const errorString = String(generalError); 
-      
-      if (errorString.includes("Unsupported file format")) {
-        body += `<p style="color: red;"><b>invalid type of file (only xlsx,csv)</b></p>`;
-      } else {
-        body += `<p style="color: red;"><b>${errorString}</b></p>`;
-      }
-    } else {
-      body += `<p>Here are the processing results for your submitted files:</p><ul>`;
-      
-      let allSuccess = true;
+  VARIANTS: {
+    VALID: "VALID",
+    FATAL: "FATAL",
+    REJECTED: "REJECTED",
+    UPLOAD_FAILED: "UPLOAD_FAILED"
+  },
 
-      results.forEach(res => {
-        body += `<li><b>${res.name}</b>:<br>`;
-        
-        if (res.status === 'SUCCESS' || res.status === 'FINISHED') {
-          body += `<span style="color: green;">your order has been completed</span>`;
-          if (res.unavailableItems && res.unavailableItems.length > 0) {
-            const preview = res.unavailableItems.slice(0, 10).join(', ');
-            const moreCount = res.unavailableItems.length > 10 ? ` (and ${res.unavailableItems.length - 10} more)` : '';
-            
-            body += `<br><span style="color: #E06666;"><b>Notice:</b> Your order has been completed, but the following items are unavailable: <b>${preview}${moreCount}</b></span>`;
-          }
-        } 
-        else if (res.status === 'FATAL') {
-          allSuccess = false;
-          if (res.error && res.error.includes("Unsupported file format")) {
-            body += `<span style="color: red;">invalid type of file (only xlsx,csv)</span>`;
-          } else {
-            body += `<span style="color: red;">incorrect data saved : In your file: in column A, row 2 write the item number. In column B, row 2 write the order amount. Row 1 is reserved for headers. Column C - customer id, column D - customer name</span>`;
-          }
-        } 
-        else if (res.status === 'ITEM_ERROR') {
-          allSuccess = false;
+  signature: function(inlineImages) {
+    let html = `<p>Best regards,`;
 
-          let clientNotFound = false;
-          let clientIdNotFound = false;
-          let nameMismatchError = null;
-          const byStatus = {};
-
-          (res.invalidItems || []).forEach(entry => {
-            if (typeof entry === "string") {
-              if (entry.includes("CLIENT_ERROR - MISSING_ID")) {
-                clientIdNotFound = true;
-              } else if (entry.includes("CLIENT_ERROR - WRONG_NAME")) {
-                nameMismatchError = entry.split("WRONG_NAME: ")[1];
-              } else if (entry.includes("CLIENT_ERROR - CLIENT_NOT_FOUND")) {
-                clientNotFound = true;
-              } else {
-                if (!byStatus["unknown"]) byStatus["unknown"] = [];
-                byStatus["unknown"].push(entry);
-              }
-              return;
-            }
-
-            const itemName = entry.item || "";
-            const status = entry.status || "unknown";
-            const matchType = entry.matchType || "";
-
-            if (matchType.indexOf("failed (client:") === 0) {
-              if (matchType.includes("MISSING_ID")) clientIdNotFound = true;
-              else if (matchType.includes("WRONG_NAME")) nameMismatchError = matchType;
-              else if (matchType.includes("CLIENT_NOT_FOUND")) clientNotFound = true;
-              return;
-            }
-
-            const label = status || matchType || "unknown";
-            if (!byStatus[label]) byStatus[label] = [];
-            byStatus[label].push(matchType ? `${itemName} [${matchType}]` : itemName);
-          });
-
-          let errorMessages = [];
-          if (clientNotFound) { errorMessages.push("Client ID was not found."); }
-          if (clientIdNotFound) { errorMessages.push("Client ID is missing from the file."); }
-          if (nameMismatchError) { errorMessages.push(`<span style="color: orange;">Client Name mismatch. ${nameMismatchError}</span>`); }
-
-          Object.keys(byStatus).forEach(statusKey => {
-            const items = byStatus[statusKey];
-            if (statusKey === CONFIG.ITEM_STATUS.NOT_IN_BQ) {
-              errorMessages.push(`The following items were not found in BigQuery: <br><b>${items.join(', ')}</b>`);
-            } else if (statusKey === CONFIG.ITEM_STATUS.OBSOLETE) {
-              errorMessages.push(`The following items are obsolete: <br><b>${items.join(', ')}</b>`);
-            } else if (statusKey === CONFIG.ITEM_STATUS.BLOCKED) {
-              errorMessages.push(`The following items are blocked for sale: <br><b>${items.join(', ')}</b>`);
-            } else if (statusKey === CONFIG.ITEM_STATUS.NO_GLOBAL_PRICE) {
-              errorMessages.push(`The following items have no global price: <br><b>${items.join(', ')}</b>`);
-            } else if (statusKey.indexOf(CONFIG.ITEM_STATUS.REPLACED) === 0) {
-              errorMessages.push(`The following items were replaced / need review (${statusKey}): <br><b>${items.join(', ')}</b>`);
-            } else if (statusKey === CONFIG.ITEM_STATUS.ANOTHER_PROBLEM) {
-              errorMessages.push(`The following items need webshop support: <br><b>${items.join(', ')}</b>`);
-            } else if (statusKey === CONFIG.ITEM_STATUS.VALID || statusKey.indexOf(CONFIG.ITEM_STATUS.REPLACED + " (") === 0) {
-              errorMessages.push(`The following items failed market/GPO match: <br><b>${items.join(', ')}</b>`);
-            } else {
-              errorMessages.push(`The following items failed (${statusKey}): <br><b>${items.join(', ')}</b>`);
-            }
-          });
-
-          body += `<span style="color: #E06666;">${errorMessages.join('<br>')}</span>`;
-        }
-
-        if (res.replacedItems && res.replacedItems.length > 0) {
-          const replacedList = res.replacedItems
-            .map(entry => `${entry.originalItem} &rarr; ${entry.currentItem}`)
-            .join(', ');
-
-          body += `<br><span style="color: #B45F06;"><b>Notice:</b> the following items were discontinued and processed with their successors: <b>${replacedList}</b></span>`;
-        }
-
-        body += `</li><br>`;
-      });
-      
-      body += `</ul>`;
-
-      if (!allSuccess) {
-        body += `<p>Please correct the highlighted errors and resubmit the affected files.</p>`;
-      }
-    }
-
-    body += `<p>Best regards,`;
-
-    let inlineImagesObj = {};
-    
     try {
-      const folder = DriveApp.getFolderById("1Ry0zPOQdTPAu10jXfK9MBWoqkr1kw7KM");
-      const files = folder.getFilesByName("hiab-text-logo.png");
-      const logoBlob = files.next().getBlob();
-      inlineImagesObj['hiabLogo'] = logoBlob;
-      body += `<br><img src="cid:hiabLogo" alt="Hiab Logo" style="height: 40px; width: auto;">`;
-
+      const folder = DriveApp.getFolderById(this.LOGO_FOLDER_ID);
+      const files = folder.getFilesByName(this.LOGO_FILE_NAME);
+      inlineImages['hiabLogo'] = files.next().getBlob();
+      html += `<br><img src="cid:hiabLogo" alt="Hiab Logo" style="height: 40px; width: auto;">`;
     } catch (e) {
 
     }
 
-    body += `
+    return html + `</p>`;
+  },
+
+  footer: function(note) {
+    return `
       <hr style="margin-top: 20px; border: none; border-top: 1px solid #dddddd;">
       <div style="color: #777777; font-size: 12px; margin-top: 10px;">
         This is an automatic notification from the HIAB deals system.<br>
-        Please do not reply for this email.
+        ${note}
       </div>
     `;
-
-
-    // Send to the explicit client email
-    message.reply("", {
-      htmlBody: body,
-      name: "Hiab Deals Automation",
-      replyTo: clientEmail ,
-      inlineImages: inlineImagesObj
-    });
-
-    const notifiedLabel = GmailApp.getUserLabelByName(CONFIG.LABELS.NOTIFIED);
-    if (notifiedLabel) {
-      message.getThread().addLabel(notifiedLabel);
-    }
   },
 
-  notifyInternalReplacements: function(info) {
-    const replacedItems = info.replacedItems || [];
-    if (replacedItems.length === 0) return;
+  // Entries are either plain item codes or ItemsReport entries carrying a label.
+  renderList: function(entries, limit) {
+    const max = limit || CONFIG.CUSTOMER_LIST_LIMIT;
+    const names = (entries || []).map(entry =>
+      typeof entry === "string" ? entry : (entry.label || entry.item || "")
+    );
+    const more = names.length > max ? ` (and ${names.length - max} more)` : '';
 
+    return `${names.slice(0, max).join(', ')}${more}`;
+  },
+
+  replacementTable: function(replacedItems) {
     const rows = replacedItems.map(entry => `
       <tr>
         <td style="padding: 4px 10px; border: 1px solid #dddddd;">${entry.originalItem}</td>
@@ -176,34 +56,175 @@ const EmailNotifier = {
         <td style="padding: 4px 10px; border: 1px solid #dddddd; color: #E06666;">${entry.warning || ""}</td>
       </tr>`).join('');
 
-    const body = `
-      <p>Items in the order below were discontinued in SAP and processed with their successors.</p>
-      <p>
-        <b>Customer:</b> ${info.customerName || ""} (${info.customerNumber || "no number"})<br>
-        <b>File:</b> ${info.attachmentName || ""}<br>
-        <b>Email ID:</b> ${info.emailId || ""}
-      </p>
+    return `
       <table style="border-collapse: collapse; font-size: 13px;">
         <tr>
           <th style="padding: 4px 10px; border: 1px solid #dddddd;">Ordered item</th>
           <th style="padding: 4px 10px; border: 1px solid #dddddd;">Processed item</th>
-          <th style="padding: 4px 10px; border: 1px solid #dddddd;">Replacement chain</th>
-          <th style="padding: 4px 10px; border: 1px solid #dddddd;">Warning on successor</th>
+          <th style="padding: 4px 10px; border: 1px solid #dddddd;">Replacement</th>
+          <th style="padding: 4px 10px; border: 1px solid #dddddd;">Warning</th>
         </tr>
         ${rows}
       </table>
-      <p style="color: #777777; font-size: 12px;">Automatic notification from the HIAB deals system.</p>
     `;
+  },
 
-    try {
-      MailApp.sendEmail({
-        to: CONFIG.TARGET_EMAIL,
-        subject: `Webshop robot - item replacements (${info.customerName || "unknown customer"})`,
-        htmlBody: body,
-        name: "Hiab Deals Automation"
-      });
-    } catch (error) {
-      Logger.log(`Internal replacement notification failed for ${info.emailId}: ${error.message}`);
+  clientCheckMessages: function(clientError) {
+    const messages = [];
+    if (!clientError) return messages;
+
+    if (clientError.missingId) {
+      messages.push(`Customer ID is missing from the file. (${CONFIG.CLIENT_ERRORS.MISSING_ID})`);
     }
+    if (clientError.notFound) {
+      messages.push(`Customer ID was not found in Salesforce. (${CONFIG.CLIENT_ERRORS.NOT_FOUND})`);
+    }
+    if (clientError.wrongName) {
+      messages.push(`${clientError.wrongName} (${CONFIG.CLIENT_ERRORS.WRONG_NAME})`);
+    }
+    if (clientError.noEmail) {
+      messages.push(`No e-mail address found for this customer contact. (${CONFIG.CLIENT_ERRORS.NO_EMAIL})`);
+    }
+    if (clientError.other) {
+      messages.push(clientError.other);
+    }
+
+    return messages;
+  },
+
+  rejectedSections: function(report) {
+    const sections = [
+      { label: "Not found in BigQuery", entries: report.notInBq },
+      { label: "Blocked for sale", entries: report.blocked },
+      { label: "No global price", entries: report.noGlobalPrice },
+      { label: "Obsolete", entries: report.obsolete },
+      { label: "Failed market / GPO match", entries: report.failedMatch },
+      { label: "Needs webshop support", entries: report.anotherProblem },
+      { label: "Not validated yet", entries: report.pending },
+      { label: "Other problem", entries: report.other }
+    ];
+
+    return sections
+      .filter(section => section.entries && section.entries.length > 0)
+      .map(section => `<li>${section.label}: <b>${this.renderList(section.entries, 100)}</b></li>`)
+      .join('');
+  },
+
+  // Technical overview for the operator who submitted the file. Sent as a reply in the
+  // original Gmail thread right after the 5_VALID / -1_ERROR phase is set.
+  sendInternalFeedback: function(message, info) {
+    const report = info.report;
+    const inlineImages = {};
+    const customerLine = info.customerNumber ? `${info.customerName} / ${info.customerNumber}` : info.customerName;
+
+    let body = `<p>Hello ${info.internalName},</p>`;
+    body += `<p>Submission overview for file <b>${info.attachmentName}</b> (Customer: <b>${customerLine}</b>).</p>`;
+
+    if (info.variant === this.VARIANTS.FATAL) {
+      body += `<p><b>STATUS:</b> <span style="color: red;">FATAL ERROR - nothing will be uploaded</span></p>`;
+      body += `<p><b>Reason:</b> <span style="color: red;">${info.errorMessage}</span></p>`;
+      body += `<p>Required file layout: column A - item number, column B - order amount, column C - customer id, column D - customer name. Row 1 is reserved for headers.</p>`;
+      body += `<p>Please correct the file and resubmit it to ${CONFIG.TARGET_EMAIL}.</p>`;
+    }
+    else if (info.variant === this.VARIANTS.REJECTED) {
+      body += `<p><b>status:</b> <span style="color: #D52B1E;">validation failed, items will not be uploaded</span></p>`;
+
+      const clientMessages = this.clientCheckMessages(report.clientError);
+      if (clientMessages.length > 0) {
+        body += `<p><b>Client check:</b></p><ul style="color:#480011;">`;
+        clientMessages.forEach(text => { body += `<li>${text}</li>`; });
+        body += `</ul>`;
+      }
+
+      body += `<p>Items validated: <b>${report.total}</b> &nbsp;|&nbsp; Passed: <b>${report.ready.length}</b> &nbsp;|&nbsp; Rejected: <b>${report.rejectedCount}</b></p>`;
+
+      const rejected = this.rejectedSections(report);
+      if (rejected) {
+        body += `<p><b>These items will not be uploaded (action required):</b></p>`;
+        body += `<ul style="color: #E06666;">${rejected}</ul>`;
+      }
+
+      if (report.replaced.length > 0) {
+        body += `<p><b>Replaced items (successor resolved, would be uploaded):</b></p>`;
+        body += this.replacementTable(report.replaced);
+      }
+
+      body += `<p>The whole file was rejected - nothing was uploaded to the webshop.<br>Please review the rejected items, correct the file and resubmit it.</p>`;
+    }
+    else if (info.variant === this.VARIANTS.UPLOAD_FAILED) {
+      body += `<p><b>STATUS:</b> <span style="color: red;">UPLOAD FAILED - the robot could not finish the webshop upload</span></p>`;
+      body += `<p><b>Reason:</b> <span style="color: red;">${info.errorMessage}</span></p>`;
+      body += `<p>The file passed validation (${report.ready.length} of ${report.total} items were ready for upload), but the cart was not completed. The customer has NOT been notified.</p>`;
+      body += `<p>Please check the webshop session and retry the upload.</p>`;
+    }
+    else {
+      body += `<p><b>STATUS:</b> <span style="color: green;">PENDING UPLOAD</span></p>`;
+      body += `<p>Items ready for upload: <b>${report.ready.length}</b> of <b>${report.total}</b></p>`;
+
+      if (report.replaced.length > 0) {
+        body += `<p><b>Replaced items (successors will be uploaded):</b></p>`;
+        body += this.replacementTable(report.replaced);
+      }
+
+      body += `<p>Customer notification will be sent to: <b>${info.customerEmail || "no address found"}</b></p>`;
+      body += `<p>No action required. The robot will upload this file to the webshop.</p>`;
+    }
+
+    body += this.signature(inlineImages);
+    body += this.footer("Please do not reply for this email.");
+
+    message.reply("", {
+      htmlBody: body,
+      name: this.SENDER_NAME,
+      inlineImages: inlineImages
+    });
+  },
+
+  // Plain-language confirmation for the external customer. Sent as a standalone email
+  // after the FINISHED phase so the internal thread stays internal.
+  sendCustomerFeedback: function(info) {
+    const buckets = info.buckets;
+    const inlineImages = {};
+    const hasIssues = buckets.unavailable.length > 0 ||
+      buckets.obsolete.length > 0 ||
+      buckets.replaced.length > 0;
+
+    let body = `<p>Dear ${info.customerName},</p>`;
+    body += `<p><span style="color: green;">Your order (<b>${info.attachmentName}</b>) has been completed.</span></p>`;
+
+    if (hasIssues) {
+      body += `<p style="color: #D52B1E;"><b>Notice:</b> Your order has been completed, but the following items are:</p><ul>`;
+
+      if (buckets.unavailable.length > 0) {
+        body += `<li>Unavailable: <b>${this.renderList(buckets.unavailable)}</b></li>`;
+      }
+      if (buckets.obsolete.length > 0) {
+        body += `<li>Obsolete: <b>${this.renderList(buckets.obsolete)}</b></li>`;
+      }
+      if (buckets.replaced.length > 0) {
+        const pairs = buckets.replaced
+          .slice(0, CONFIG.CUSTOMER_LIST_LIMIT)
+          .map(entry => `${entry.originalItem} &rarr; ${entry.currentItem}`)
+          .join('<br>');
+        const more = buckets.replaced.length > CONFIG.CUSTOMER_LIST_LIMIT
+          ? `<br>(and ${buckets.replaced.length - CONFIG.CUSTOMER_LIST_LIMIT} more)`
+          : '';
+
+        body += `<li>Replaced (we will send the succeeding items):<br><b>${pairs}${more}</b></li>`;
+      }
+
+      body += `</ul>`;
+      body += `<p>If you have any questions regarding these items, please contact your customer support representative.</p>`;
+    }
+
+    body += this.signature(inlineImages);
+    body += this.footer("Please contact your customer support representative if you have any questions.");
+
+    GmailApp.sendEmail(info.customerEmail, "Your HIAB order has been completed", "", {
+      htmlBody: body,
+      name: this.SENDER_NAME,
+      replyTo: info.internalEmail || CONFIG.TARGET_EMAIL,
+      inlineImages: inlineImages
+    });
   }
 };

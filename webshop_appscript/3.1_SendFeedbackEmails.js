@@ -1,182 +1,220 @@
-// Reads the "replaced (OLD->NEW)" statuses written by the SAP gate for one email.
-function collectReplacedItems(ss, emailId) {
-  const itemsSheet = ss.getSheetByName(CONFIG.SHEETS.ITEMS);
-  if (!itemsSheet) return [];
+// MAIN column indexes (0-based) used by both feedback stages.
+const MAIN_COL = {
+  EMAIL_ID: 0,
+  CLIENT_MAIL: 1,
+  CUSTOMER_NUMBER: 2,
+  CUSTOMER_NAME: 3,
+  ATTACHMENT_NAME: 4,
+  ACTIVE_PHASE: 6,
+  MANUAL_PHASE: 7,
+  ROBOT_PHASE: 8,
+  EMAIL_FEEDBACK: 9,
+  CUSTOMER_EMAIL: 13
+};
 
-  ItemsSheetWriter.ensureColumns(itemsSheet);
-  const indexes = ItemsSheetWriter.headerIndexes(itemsSheet);
-  const emailIdIdx = indexes.EMAIL_ID;
-  const itemNameIdx = indexes.ITEM_NAME;
-  const itemStatusIdx = indexes.ITEM_STATUS;
-  if (emailIdIdx === undefined || itemStatusIdx === undefined) return [];
+const EMAIL_FEEDBACK_COLUMN = 10;
 
-  const itemsData = itemsSheet.getDataRange().getValues();
-  const prefix = CONFIG.ITEM_STATUS.REPLACED + " (";
-  const replaced = [];
-
-  for (let j = 1; j < itemsData.length; j++) {
-    if (itemsData[j][emailIdIdx] !== emailId) continue;
-
-    const status = String(itemsData[j][itemStatusIdx] || "").trim();
-    if (status.indexOf(prefix) !== 0 || status.indexOf(" / ") !== -1) continue;
-
-    const chain = status.substring(prefix.length, status.indexOf(")"));
-    const steps = chain.split(",").map(step => step.trim()).filter(step => step);
-    if (steps.length === 0) continue;
-
-    const warning = status.match(/\[warning: (.+)\]$/);
-
-    replaced.push({
-      originalItem: steps[0].split("->")[0].trim(),
-      currentItem: String(itemsData[j][itemNameIdx] || "").trim(),
-      chain: chain,
-      warning: warning ? warning[1] : ""
-    });
+function getOrCreateLabel(labelName) {
+  let label = GmailApp.getUserLabelByName(labelName);
+  if (!label) {
+    label = GmailApp.createLabel(labelName);
+    Logger.log(`Created missing label: ${labelName}`);
   }
-
-  return replaced;
+  return label;
 }
 
-function processFeedbackEmails() {
+// Enforces one base label (ERROR / FINISHED) plus NOTIFIED and makes the thread stand out.
+function applyFinalLabels(thread, targetBaseLabelName) {
+  const targetLabel = getOrCreateLabel(targetBaseLabelName);
+  const notifiedLabel = getOrCreateLabel(CONFIG.LABELS.NOTIFIED);
+
+  const allBaseLabels = [
+    GmailApp.getUserLabelByName(CONFIG.LABELS.NEW),
+    GmailApp.getUserLabelByName(CONFIG.LABELS.PROCESSING),
+    GmailApp.getUserLabelByName(CONFIG.LABELS.ERROR),
+    GmailApp.getUserLabelByName(CONFIG.LABELS.FINISHED)
+  ];
+
+  allBaseLabels.forEach(lbl => {
+    if (lbl && lbl.getName() !== targetLabel.getName() && lbl.getName() !== notifiedLabel.getName()) {
+      thread.removeLabel(lbl);
+    }
+  });
+
+  thread.addLabel(targetLabel);
+  thread.addLabel(notifiedLabel);
+  thread.markUnread();
+}
+
+// The person who submitted the file is the sender of the original email.
+function internalSenderName(message) {
+  const from = String(message.getFrom() || "");
+  const displayName = from.match(/^\s*"?([^"<]+?)"?\s*</);
+  if (displayName && displayName[1].trim()) {
+    return displayName[1].trim();
+  }
+
+  const address = from.match(/<([^>]+)>/);
+  return String(address ? address[1] : from).split("@")[0] || "there";
+}
+
+function customerNameFromRow(row) {
+  const name = String(row[MAIN_COL.CUSTOMER_NAME] || "").trim();
+  return (name && name !== "N/A") ? name : "Customer";
+}
+
+// The robot writes ROBOT_PHASE as "FINISHED" or "ERROR - <reason>".
+const ROBOT_FINISHED = "FINISHED";
+
+function robotFailureReason(robotPhase) {
+  if (robotPhase.indexOf("ERROR") !== 0) return null;
+  return robotPhase.split(" - ").slice(1).join(" - ") || "Unknown robot error";
+}
+
+// -1_ERROR rows carry the reason after the phase name: "-1_ERROR - <reason>".
+function describeError(activePhase) {
+  const reason = activePhase.split(" - ").slice(1).join(" - ") || "Unknown Error";
+
+  if (reason.includes("Invalid items") || reason.includes("CLIENT_ERROR")) {
+    return { variant: EmailNotifier.VARIANTS.REJECTED, message: reason };
+  }
+  if (reason.includes("Unsupported file format")) {
+    return { variant: EmailNotifier.VARIANTS.FATAL, message: "invalid type of file (only xlsx, csv)" };
+  }
+
+  return { variant: EmailNotifier.VARIANTS.FATAL, message: reason };
+}
+
+// Stage 1: technical overview for the operator, sent as soon as the file reaches
+// 5_VALID or -1_ERROR. EMAIL_FEEDBACK moves NO -> INTERNAL_SENT (or NOTIFIED on error).
+function sendInternalFeedbackEmails() {
   const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   const mainSheet = ss.getSheetByName(CONFIG.SHEETS.MAIN);
   const data = mainSheet.getDataRange().getValues();
-  
+
   for (let i = 1; i < data.length; i++) {
     const rowIdx = i + 1;
-    
-    const emailId = data[i][0]; 
-    const clientEmail = String(data[i][1]).trim(); 
-    const customerName = data[i][3] !== "N/A" ? String(data[i][3]).trim() : "Customer"; 
-    const attachmentName = data[i][4]; 
-    const activePhase = String(data[i][6]).trim();
-    
-    const manualPhase = String(data[i][7]).trim(); 
-    const robotPhase = String(data[i][8]).trim();  
-    const emailFeedback = String(data[i][9]).trim(); 
-    
-    if (emailFeedback === "NO" && (robotPhase === "FINISHED" || manualPhase === "ERROR")) {
-      
-      try {
-        const message = GmailApp.getMessageById(emailId);
-        if (!message) continue;
-        
-        const thread = message.getThread(); 
+    const row = data[i];
 
-        let results = [];
-        let generalError = null;
-        let targetBaseLabelName = "";
-        const replacedItems = collectReplacedItems(ss, emailId);
-        // ERROR handler
-        if (manualPhase === "ERROR") {
-          targetBaseLabelName = CONFIG.LABELS.ERROR; 
-          
-        
-          const errorMessage = activePhase.split(" - ").slice(1).join(" - ") || "Unknown Error";
-          
-          if (errorMessage.includes("Invalid items") || errorMessage.includes("CLIENT_ERROR")) {
-            let actualInvalidItems = [];
+    if (String(row[MAIN_COL.EMAIL_FEEDBACK]).trim() !== CONFIG.FEEDBACK_STATES.PENDING) continue;
 
-            // Jeśli to błąd klienta, przekazujemy go do maila
-            if (errorMessage.includes("CLIENT_ERROR")) {
-              actualInvalidItems.push(errorMessage);
-            }
+    const activePhase = String(row[MAIN_COL.ACTIVE_PHASE]).trim();
+    const isValid = activePhase === CONFIG.PHASES.VALID;
+    const isError = activePhase.indexOf(CONFIG.PHASES.ERROR) === 0;
 
-            const itemsSheet = ss.getSheetByName(CONFIG.SHEETS.ITEMS);
-            if (itemsSheet) {
-              ItemsSheetWriter.ensureColumns(itemsSheet);
-              const indexes = ItemsSheetWriter.headerIndexes(itemsSheet);
-              const itemsData = itemsSheet.getDataRange().getValues();
-              const emailIdIdx = indexes.EMAIL_ID;
-              const itemNameIdx = indexes.ITEM_NAME;
-              const itemStatusIdx = indexes.ITEM_STATUS;
-              const matchTypeIdx = indexes.MATCH_TYPE;
+    if (!isValid && !isError) continue;
 
-              for (let j = 1; j < itemsData.length; j++) {
-                if (itemsData[j][emailIdIdx] !== emailId) continue;
+    const emailId = row[MAIN_COL.EMAIL_ID];
+    // The robot can already have failed before this trigger ran.
+    const robotFailure = isValid ? robotFailureReason(String(row[MAIN_COL.ROBOT_PHASE]).trim()) : null;
 
-                const status = String(itemsData[j][itemStatusIdx] || "").trim();
-                const matchType = String(itemsData[j][matchTypeIdx] || "").trim();
-                const itemName = String(itemsData[j][itemNameIdx] || "").trim();
+    let variant = EmailNotifier.VARIANTS.VALID;
+    let errorMessage = "";
 
-                const gateOk = status === CONFIG.ITEM_STATUS.VALID ||
-                  (status.indexOf(CONFIG.ITEM_STATUS.REPLACED + " (") === 0 && status.indexOf(" / ") === -1);
-                const matchOk = matchType === CONFIG.MATCH_TYPE.STANDARD ||
-                  matchType.indexOf(CONFIG.MATCH_TYPE.GBO + " (") === 0;
+    if (isError) {
+      const errorInfo = describeError(activePhase);
+      variant = errorInfo.variant;
+      errorMessage = errorInfo.message;
+    } else if (robotFailure) {
+      variant = EmailNotifier.VARIANTS.UPLOAD_FAILED;
+      errorMessage = robotFailure;
+    }
 
-                if (!gateOk || !matchOk || matchType.indexOf(CONFIG.MATCH_TYPE.FAILED) === 0) {
-                  actualInvalidItems.push({ item: itemName, status: status, matchType: matchType });
-                }
-              }
-            }
-            
-            results.push({ name: attachmentName, status: 'ITEM_ERROR', invalidItems: actualInvalidItems, replacedItems: replacedItems });
-            
-          } else if (errorMessage.includes("Unsupported file format") || errorMessage.includes("missing") || errorMessage.includes("incorrect")) {
-             results.push({ name: attachmentName, status: 'FATAL', error: errorMessage });
-          } else {
-             generalError = errorMessage;
-          }
-        }
-        else if (robotPhase === "FINISHED") {
-          targetBaseLabelName = CONFIG.LABELS.FINISHED; 
-          results.push({ name: attachmentName, status: 'SUCCESS', replacedItems: replacedItems });
-        }
+    try {
+      const message = GmailApp.getMessageById(emailId);
+      if (!message) continue;
 
-        EmailNotifier.sendFeedback(message, clientEmail, customerName, results, generalError);
+      EmailNotifier.sendInternalFeedback(message, {
+        internalName: internalSenderName(message),
+        customerName: customerNameFromRow(row),
+        customerNumber: String(row[MAIN_COL.CUSTOMER_NUMBER] || "").trim(),
+        customerEmail: String(row[MAIN_COL.CUSTOMER_EMAIL] || "").trim(),
+        attachmentName: row[MAIN_COL.ATTACHMENT_NAME],
+        variant: variant,
+        errorMessage: errorMessage,
+        report: ItemsReport.build(ss, emailId)
+      });
 
-        if (replacedItems.length > 0) {
-          EmailNotifier.notifyInternalReplacements({
-            emailId: emailId,
-            customerName: customerName,
-            customerNumber: String(data[i][2] || "").trim(),
-            attachmentName: attachmentName,
-            replacedItems: replacedItems
-          });
-        }
-
-
-        function getOrCreateLabel(labelName) {
-          let label = GmailApp.getUserLabelByName(labelName);
-          if (!label) {
-            label = GmailApp.createLabel(labelName);
-            Logger.log(`Created missing label: ${labelName}`);
-          }
-          return label;
-        }
-
-        const targetLabel = getOrCreateLabel(targetBaseLabelName);
-        const notifiedLabel = getOrCreateLabel(CONFIG.LABELS.NOTIFIED);
-        
-        const allBaseLabels = [
-          GmailApp.getUserLabelByName(CONFIG.LABELS.NEW),
-          GmailApp.getUserLabelByName(CONFIG.LABELS.PROCESSING),
-          GmailApp.getUserLabelByName(CONFIG.LABELS.ERROR),
-          GmailApp.getUserLabelByName(CONFIG.LABELS.FINISHED)
-        ];
-
-        // 1. Remove any old base labels
-        allBaseLabels.forEach(lbl => {
-          if (lbl && lbl.getName() !== targetLabel.getName() && lbl.getName() !== notifiedLabel.getName()) {
-            thread.removeLabel(lbl);
-          }
-        });
-
-        // 2. Add the correct final base label (ERROR or FINISHED)
-        thread.addLabel(targetLabel);
-        
-        // 3. Ensure NOTIFIED label is firmly attached to the thread
-        thread.addLabel(notifiedLabel);
-        
-        // 4. Mark the entire thread as unread so it stands out
-        thread.markUnread();
-        // ==========================================
-
-        SheetHelper.updateCell(rowIdx, 10, "NOTIFIED"); 
-        
-      } catch (error) {
-        Logger.log(`Failed to send feedback for row ${rowIdx}: ${error.message}`);
+      if (variant === EmailNotifier.VARIANTS.VALID) {
+        // Thread stays in WEBSHOP/PROCESSING until the robot finishes the upload.
+        SheetHelper.updateCell(rowIdx, EMAIL_FEEDBACK_COLUMN, CONFIG.FEEDBACK_STATES.INTERNAL_SENT);
+      } else {
+        applyFinalLabels(message.getThread(), CONFIG.LABELS.ERROR);
+        SheetHelper.updateCell(rowIdx, EMAIL_FEEDBACK_COLUMN, CONFIG.FEEDBACK_STATES.DONE);
       }
+
+    } catch (error) {
+      Logger.log(`Failed to send internal feedback for row ${rowIdx}: ${error.message}`);
     }
   }
+}
+
+// Stage 2: plain-language confirmation for the customer once the robot reports FINISHED.
+// EMAIL_FEEDBACK moves INTERNAL_SENT -> NOTIFIED.
+function sendCustomerFeedbackEmails() {
+  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+  const mainSheet = ss.getSheetByName(CONFIG.SHEETS.MAIN);
+  const data = mainSheet.getDataRange().getValues();
+
+  for (let i = 1; i < data.length; i++) {
+    const rowIdx = i + 1;
+    const row = data[i];
+
+    if (String(row[MAIN_COL.EMAIL_FEEDBACK]).trim() !== CONFIG.FEEDBACK_STATES.INTERNAL_SENT) continue;
+
+    const robotPhase = String(row[MAIN_COL.ROBOT_PHASE]).trim();
+    const robotFailure = robotFailureReason(robotPhase);
+    if (robotPhase !== ROBOT_FINISHED && !robotFailure) continue;
+
+    const emailId = row[MAIN_COL.EMAIL_ID];
+    const customerEmail = String(row[MAIN_COL.CUSTOMER_EMAIL] || "").trim();
+
+    try {
+      const message = GmailApp.getMessageById(emailId);
+      if (!message) continue;
+
+      // The robot failed after validation: tell the operator, never the customer.
+      if (robotFailure) {
+        EmailNotifier.sendInternalFeedback(message, {
+          internalName: internalSenderName(message),
+          customerName: customerNameFromRow(row),
+          customerNumber: String(row[MAIN_COL.CUSTOMER_NUMBER] || "").trim(),
+          customerEmail: customerEmail,
+          attachmentName: row[MAIN_COL.ATTACHMENT_NAME],
+          variant: EmailNotifier.VARIANTS.UPLOAD_FAILED,
+          errorMessage: robotFailure,
+          report: ItemsReport.build(ss, emailId)
+        });
+
+        applyFinalLabels(message.getThread(), CONFIG.LABELS.ERROR);
+        SheetHelper.updateCell(rowIdx, EMAIL_FEEDBACK_COLUMN, CONFIG.FEEDBACK_STATES.DONE);
+        continue;
+      }
+
+      if (customerEmail) {
+        const report = ItemsReport.build(ss, emailId);
+
+        EmailNotifier.sendCustomerFeedback({
+          customerEmail: customerEmail,
+          customerName: customerNameFromRow(row),
+          attachmentName: row[MAIN_COL.ATTACHMENT_NAME],
+          internalEmail: String(row[MAIN_COL.CLIENT_MAIL] || "").trim(),
+          buckets: ItemsReport.customerBuckets(report)
+        });
+      } else {
+        Logger.log(`No customer_email in column N for row ${rowIdx}; customer notification skipped.`);
+      }
+
+      applyFinalLabels(message.getThread(), CONFIG.LABELS.FINISHED);
+      SheetHelper.updateCell(rowIdx, EMAIL_FEEDBACK_COLUMN, CONFIG.FEEDBACK_STATES.DONE);
+
+    } catch (error) {
+      Logger.log(`Failed to send customer feedback for row ${rowIdx}: ${error.message}`);
+    }
+  }
+}
+
+function processFeedbackEmails() {
+  sendInternalFeedbackEmails();
+  sendCustomerFeedbackEmails();
 }

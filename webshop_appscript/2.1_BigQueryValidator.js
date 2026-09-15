@@ -308,12 +308,13 @@ const BigQueryValidator = {
 
   flagInvalidItems: function(parsedItems) {
     if (!parsedItems || parsedItems.length === 0) {
-      return { hasInvalid: false, invalidItems: [], clientError: null };
+      return { hasInvalid: false, invalidItems: [], clientError: null, customerEmail: "" };
     }
 
     let hasInvalid = false;
     let invalidItemsList = [];
     let clientErrorMessage = null;
+    let customerEmail = "";
 
     parsedItems.forEach(item => {
       item.existsInBq = false;
@@ -352,14 +353,17 @@ const BigQueryValidator = {
 
     if (!customerNumber || String(customerNumber).trim() === "" || customerNumber === "N/A") {
       hasInvalid = true;
-      clientErrorMessage = "MISSING_ID";
+      clientErrorMessage = CONFIG.CLIENT_ERRORS.MISSING_ID;
     } else {
+      // Salesforce contacts hold both the user name checked against the file and
+      // the address used for the customer notification.
       const clientSql = `
         SELECT DISTINCT
-          LTRIM(Customer_number, "C_0000") as Customer_Nr,
-          Customer_user_name as Customer
-        FROM \`h-apivp-0001-p.SAP.Webshop_robot_cust_t\`
-        WHERE LTRIM(Customer_number, "C_0000") = '${safeCustomerNumber}'
+          LTRIM(Account_External_Id__c, "C_0000") AS Customer_Nr,
+          CONCAT(FirstName, " ", LastName)        AS Customer,
+          Email
+        FROM \`${CONFIG.BQ_PROJECT_ID}.salesforce_hiab.user\`
+        WHERE LTRIM(Account_External_Id__c, "C_0000") = '${safeCustomerNumber}'
       `;
 
       let clientResults;
@@ -373,20 +377,24 @@ const BigQueryValidator = {
 
       if (!clientResults.rows || clientResults.rows.length === 0) {
         hasInvalid = true;
-        clientErrorMessage = "CLIENT_NOT_FOUND";
+        clientErrorMessage = CONFIG.CLIENT_ERRORS.NOT_FOUND;
       } else {
         for (let r = 0; r < clientResults.rows.length; r++) {
           const dbCustomerName = this.bqValue(clientResults.rows[r], 1);
 
           if (dbCustomerName.toLowerCase() === customerNameFromFile.toLowerCase()) {
             nameMatched = true;
+            customerEmail = this.bqValue(clientResults.rows[r], 2);
             break;
           }
         }
 
         if (!nameMatched) {
           hasInvalid = true;
-          clientErrorMessage = `WRONG_NAME: The name '${customerNameFromFile}' is not associated with this Client ID.`;
+          clientErrorMessage = `${CONFIG.CLIENT_ERRORS.WRONG_NAME}: The name '${customerNameFromFile}' is not associated with this Client ID.`;
+        } else if (!customerEmail) {
+          hasInvalid = true;
+          clientErrorMessage = CONFIG.CLIENT_ERRORS.NO_EMAIL;
         }
       }
     }
@@ -408,7 +416,8 @@ const BigQueryValidator = {
       return {
         hasInvalid: hasInvalid,
         invalidItems: [...new Set(invalidItemsList)],
-        clientError: clientErrorMessage
+        clientError: clientErrorMessage,
+        customerEmail: customerEmail
       };
     }
 
@@ -419,7 +428,8 @@ const BigQueryValidator = {
       return {
         hasInvalid: hasInvalid,
         invalidItems: [...new Set(invalidItemsList)],
-        clientError: clientErrorMessage
+        clientError: clientErrorMessage,
+        customerEmail: customerEmail
       };
     }
 
@@ -571,7 +581,8 @@ const BigQueryValidator = {
     return {
       hasInvalid: hasInvalid,
       invalidItems: [...new Set(invalidItemsList)],
-      clientError: clientErrorMessage
+      clientError: clientErrorMessage,
+      customerEmail: customerEmail
     };
   },
 

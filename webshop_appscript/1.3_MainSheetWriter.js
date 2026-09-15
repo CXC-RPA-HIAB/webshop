@@ -20,7 +20,7 @@ const SheetHelper = {
       mainRecord.TIMESTAMP_EMAIL_RECEIVE,
       mainRecord.TIMESTAMP_PROCESSED_AT,
       mainRecord.TITLE,
-      mainRecord.SECOND_NUMBER
+      mainRecord.CUSTOMER_EMAIL
     ];
     
     mainSheet.getRange(2, 1, 1, rowData.length).setValues([rowData]);

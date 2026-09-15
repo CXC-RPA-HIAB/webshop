@@ -72,7 +72,7 @@ function processHiabDeals() {
           TIMESTAMP_EMAIL_RECEIVE: message.getDate(),
           TIMESTAMP_PROCESSED_AT: new Date(),
           TITLE: message.getSubject().substring(0, 20),
-          SECOND_NUMBER: ""
+          CUSTOMER_EMAIL: ""
         };
 
         // get email

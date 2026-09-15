@@ -73,6 +73,11 @@ function validateMaterials() {
             continue; // Move to the next email if BigQuery crashes
           }
 
+          // Column N feeds the customer notification sent after the FINISHED phase
+          if (validationResult.customerEmail) {
+            SheetHelper.updateCell(rowIdx, 14, validationResult.customerEmail);
+          }
+
           // 5: Updating the ITEMS sheet with validation statuses
           try {
             ItemsSheetWriter.ensureColumns(itemsSheet);

@@ -36,6 +36,7 @@ const Parser = {
     }
     
     let parsedItems = [];
+    const itemsByName = {};
     
     // Loop starts at 1 to skip the header row, processing all data rows
     for (let i = 1; i < rows.length; i++) {
@@ -48,15 +49,21 @@ const Parser = {
       const count = parseInt(row[1], 10);
       
       if (isNaN(count)) throw new Error(`Invalid count at row ${i+1}. Must be an integer.`);
-      
-      
-      parsedItems.push({
+
+      if (itemsByName[itemOrder]) {
+        itemsByName[itemOrder].ITEM_COUNT += count;
+        continue;
+      }
+
+      const item = {
         ITEM_NAME: itemOrder,
         ITEM_COUNT: count,
         isValid: true, 
         CUSTOMER_NUMBER: customerNumber, // Attaches the Client ID found in Row 2 to all items
         FULL_NAME: fullName              // Attaches the Client Name found in Row 2 to all items
-      });
+      };
+      itemsByName[itemOrder] = item;
+      parsedItems.push(item);
     }
 
     if (parsedItems.length === 0) throw new Error("No valid data rows found.");

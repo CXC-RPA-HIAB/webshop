@@ -86,7 +86,7 @@ function describeError(activePhase) {
 }
 
 // Stage 1: technical overview for the operator, sent as soon as the file reaches
-// 5_VALID or -1_ERROR. EMAIL_FEEDBACK moves NO -> INTERNAL_SENT (or NOTIFIED on error).
+// 5_VALID or -1_ERROR. EMAIL_FEEDBACK moves NO -> INTERNAL_SENT.
 function sendInternalFeedbackEmails() {
   const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   const mainSheet = ss.getSheetByName(CONFIG.SHEETS.MAIN);
@@ -140,7 +140,10 @@ function sendInternalFeedbackEmails() {
         SheetHelper.updateCell(rowIdx, EMAIL_FEEDBACK_COLUMN, CONFIG.FEEDBACK_STATES.INTERNAL_SENT);
       } else {
         applyFinalLabels(message.getThread(), CONFIG.LABELS.ERROR);
-        SheetHelper.updateCell(rowIdx, EMAIL_FEEDBACK_COLUMN, CONFIG.FEEDBACK_STATES.DONE);
+        const terminalState = variant === EmailNotifier.VARIANTS.UPLOAD_FAILED
+          ? CONFIG.FEEDBACK_STATES.INTERNAL_ONLY_UPLOAD_FAILED
+          : CONFIG.FEEDBACK_STATES.INTERNAL_SENT;
+        SheetHelper.updateCell(rowIdx, EMAIL_FEEDBACK_COLUMN, terminalState);
       }
 
     } catch (error) {
@@ -150,7 +153,7 @@ function sendInternalFeedbackEmails() {
 }
 
 // Stage 2: plain-language confirmation for the customer once the robot reports FINISHED.
-// EMAIL_FEEDBACK moves INTERNAL_SENT -> NOTIFIED.
+// EMAIL_FEEDBACK moves INTERNAL_SENT -> INTERNAL_AND_EXTERNAL_SENT / INTERNAL_ONLY / INTERNAL_ONLY_UPLOAD_FAILED.
 function sendCustomerFeedbackEmails() {
   const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
   const mainSheet = ss.getSheetByName(CONFIG.SHEETS.MAIN);
@@ -187,9 +190,11 @@ function sendCustomerFeedbackEmails() {
         });
 
         applyFinalLabels(message.getThread(), CONFIG.LABELS.ERROR);
-        SheetHelper.updateCell(rowIdx, EMAIL_FEEDBACK_COLUMN, CONFIG.FEEDBACK_STATES.DONE);
+        SheetHelper.updateCell(rowIdx, EMAIL_FEEDBACK_COLUMN, CONFIG.FEEDBACK_STATES.INTERNAL_ONLY_UPLOAD_FAILED);
         continue;
       }
+
+      let feedbackState = CONFIG.FEEDBACK_STATES.INTERNAL_ONLY;
 
       if (customerEmail) {
         const report = ItemsReport.build(ss, emailId);
@@ -201,12 +206,13 @@ function sendCustomerFeedbackEmails() {
           internalEmail: String(row[MAIN_COL.CLIENT_MAIL] || "").trim(),
           buckets: ItemsReport.customerBuckets(report)
         });
+        feedbackState = CONFIG.FEEDBACK_STATES.INTERNAL_AND_EXTERNAL_SENT;
       } else {
         Logger.log(`No customer_email in column N for row ${rowIdx}; customer notification skipped.`);
       }
 
       applyFinalLabels(message.getThread(), CONFIG.LABELS.FINISHED);
-      SheetHelper.updateCell(rowIdx, EMAIL_FEEDBACK_COLUMN, CONFIG.FEEDBACK_STATES.DONE);
+      SheetHelper.updateCell(rowIdx, EMAIL_FEEDBACK_COLUMN, feedbackState);
 
     } catch (error) {
       Logger.log(`Failed to send customer feedback for row ${rowIdx}: ${error.message}`);

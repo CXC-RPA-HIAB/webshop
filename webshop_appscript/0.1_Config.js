@@ -51,11 +51,13 @@ PHASES: {
     FAILED: "failed"
   },
 
-  // EMAIL_FEEDBACK (column J) state machine: PENDING -> INTERNAL_SENT -> DONE
+  // EMAIL_FEEDBACK (column J): NO -> INTERNAL_SENT (awaiting bot) -> terminal states
   FEEDBACK_STATES: {
     PENDING: "NO",
     INTERNAL_SENT: "INTERNAL_SENT",
-    DONE: "NOTIFIED"
+    INTERNAL_AND_EXTERNAL_SENT: "INTERNAL_AND_EXTERNAL_SENT",
+    INTERNAL_ONLY: "INTERNAL_ONLY",
+    INTERNAL_ONLY_UPLOAD_FAILED: "INTERNAL_ONLY_UPLOAD_FAILED"
   },
 
   // Written by the Python robot into WEBSHOP_ITEM_STATUS for accepted materials

@@ -70,6 +70,9 @@ PHASES: {
     NO_EMAIL: "NO_CUSTOMER_EMAIL"
   },
 
-  CUSTOMER_LIST_LIMIT: 25
+  CUSTOMER_LIST_LIMIT: 25,
+
+  // Linked in the customer email so the client can open their saved carts
+  SAVED_CARTS_URL: "https://webshop.hiab.com/en/my-account/saved-carts/"
 
 };

@@ -65,6 +65,7 @@ const ItemsReport = {
       other: [],
       replaced: [],
       webshopRejected: [],
+      processed: [],
       clientError: { missingId: false, notFound: false, noEmail: false, wrongName: null, other: null },
       hasClientError: false,
       rejectedCount: 0
@@ -80,6 +81,7 @@ const ItemsReport = {
     const itemStatusIdx = indexes.ITEM_STATUS;
     const matchTypeIdx = indexes.MATCH_TYPE;
     const webshopStatusIdx = indexes.WEBSHOP_ITEM_STATUS;
+    const itemCountIdx = indexes.ITEM_COUNT;
 
     if (emailIdIdx === undefined || itemNameIdx === undefined || itemStatusIdx === undefined) {
       return report;
@@ -150,6 +152,20 @@ const ItemsReport = {
 
       if (webshopStatus && webshopStatus !== CONFIG.WEBSHOP_ITEM_STATUS_OK) {
         report.webshopRejected.push({ item: currentItem, originalItem: originalItem, status: webshopStatus });
+      }
+
+      if (webshopStatus === CONFIG.WEBSHOP_ITEM_STATUS_OK) {
+        let quantity = 1;
+        if (itemCountIdx !== undefined) {
+          const parsed = parseInt(itemsData[j][itemCountIdx], 10);
+          if (!isNaN(parsed) && parsed > 0) quantity = parsed;
+        }
+        report.processed.push({
+          item: currentItem,
+          originalItem: originalItem,
+          label: label,
+          quantity: quantity
+        });
       }
     }
 

@@ -9,6 +9,7 @@ const MAIN_COL = {
   MANUAL_PHASE: 7,
   ROBOT_PHASE: 8,
   EMAIL_FEEDBACK: 9,
+  EMAIL_TITLE: 12,
   CUSTOMER_EMAIL: 13
 };
 
@@ -170,7 +171,8 @@ function sendCustomerFeedbackEmails() {
     if (robotPhase !== ROBOT_FINISHED && !robotFailure) continue;
 
     const emailId = row[MAIN_COL.EMAIL_ID];
-    const customerEmail = String(row[MAIN_COL.CUSTOMER_EMAIL] || "").trim();
+    //const customerEmail = String(row[MAIN_COL.CUSTOMER_EMAIL] || "").trim();
+    const customerEmail = "sekulam98@gmial.com";
 
     try {
       const message = GmailApp.getMessageById(emailId);
@@ -202,9 +204,11 @@ function sendCustomerFeedbackEmails() {
         EmailNotifier.sendCustomerFeedback({
           customerEmail: customerEmail,
           customerName: customerNameFromRow(row),
-          attachmentName: row[MAIN_COL.ATTACHMENT_NAME],
           internalEmail: String(row[MAIN_COL.CLIENT_MAIL] || "").trim(),
-          buckets: ItemsReport.customerBuckets(report)
+          // The robot names the webshop saved cart after EMAIL_TITLE (column M).
+          savedCartName: String(row[MAIN_COL.EMAIL_TITLE] || "").trim(),
+          buckets: ItemsReport.customerBuckets(report),
+          processedItems: report.processed
         });
         feedbackState = CONFIG.FEEDBACK_STATES.INTERNAL_AND_EXTERNAL_SENT;
       } else {

@@ -172,7 +172,7 @@ function sendCustomerFeedbackEmails() {
 
     const emailId = row[MAIN_COL.EMAIL_ID];
     //const customerEmail = String(row[MAIN_COL.CUSTOMER_EMAIL] || "").trim();
-    const customerEmail = "sekulam98@gmial.com";
+    const customerEmail = "sekulam98@gmail.com";
 
     try {
       const message = GmailApp.getMessageById(emailId);

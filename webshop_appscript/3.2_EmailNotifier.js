@@ -225,7 +225,6 @@ const EmailNotifier = {
           </td>
         </tr>
       </table>
-      <p style="margin: 0; font-size: 12px; color: #6b7480; word-break: break-all;">${url}</p>
     `;
   },
 

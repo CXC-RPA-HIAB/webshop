@@ -1,4 +1,4 @@
-// Single pass over the ITEMS sheet for one EMAIL_ID. Turns ITEM_STATUS, MATCH_TYPE
+// aaSingle pass over the ITEMS sheet for one EMAIL_ID. Turns ITEM_STATUS, MATCH_TYPE
 // and WEBSHOP_ITEM_STATUS into the buckets shared by the internal and the customer mail.
 const ItemsReport = {
 
@@ -120,8 +120,10 @@ const ItemsReport = {
         report.obsolete.push(entry);
       } else if (status === CONFIG.ITEM_STATUS.ANOTHER_PROBLEM) {
         report.anotherProblem.push(entry);
-      } else if (status === CONFIG.ITEM_STATUS.PENDING_BQ) {
-        report.pending.push(entry);
+      } else if (status === CONFIG.ITEM_STATUS.PENDING_BQ || status === CONFIG.ITEM_STATUS.QUEUED || status === "") {
+        if (!webshopStatus) {
+          report.pending.push(entry);
+        }
       } else if (this.isCleanReplacement(status)) {
         report.replaced.push({
           originalItem: originalItem,
@@ -136,7 +138,7 @@ const ItemsReport = {
       } else if (status.indexOf(this.replacedPrefix()) === 0) {
         // "replaced (...) / another problem (...)": no single successor could be resolved
         report.anotherProblem.push(entry);
-      } else if (status !== CONFIG.ITEM_STATUS.VALID) {
+      } else if (status !== CONFIG.ITEM_STATUS.VALID && status !== CONFIG.ITEM_STATUS.QUEUED) {
         report.other.push(entry);
       }
 
@@ -169,7 +171,11 @@ const ItemsReport = {
       }
     }
 
-    report.rejectedCount = report.total - report.ready.length;
+    const hasWebshopResults = report.processed.length > 0 || report.webshopRejected.length > 0;
+    report.rejectedCount = hasWebshopResults
+      ? report.webshopRejected.length
+      : report.total - report.ready.length;
+    report.hasWebshopResults = hasWebshopResults;
     return report;
   },
 

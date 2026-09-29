@@ -66,6 +66,7 @@ def webshop_orchestration(
     batch_csvs: Sequence[str | Path],
     config=None,
     on_phase: Optional[PhaseCallback] = None,
+    on_batch_name: Optional[Callable[[str], None]] = None,
     require_existing_session: bool = False,
 ) -> dict[str, str]:
     """
@@ -79,8 +80,7 @@ def webshop_orchestration(
     client_number = str(order.get("client_number", ""))
     client_name = str(order.get("client_name", ""))
     client_mail = str(order.get("client_mail", ""))
-    email_title = str(order.get("email_title", ""))
-    
+
     paths: List[Path] = [Path(p).resolve() for p in batch_csvs]
     if not paths:
         raise ValueError("No batch CSV files provided.")
@@ -220,9 +220,9 @@ def webshop_orchestration(
 
     #  _create_saved_cart
     email_prefix = (client_mail or "").strip()[:33]
-    cart_desc = f"{datetime.datetime.now().strftime('%d%m%y_%H%M')}_{email_prefix}"
-    
-    msg = f"Creating new cart: {cart_desc}"
+    batch_name = f"{datetime.datetime.now().strftime('%d%m%y_%H%M')}_{email_prefix}"
+
+    msg = f"Creating new cart: {batch_name}"
     logger.info(msg); on_phase and on_phase("PROCESSING", msg)
     time.sleep(2.0)
 
@@ -238,10 +238,15 @@ def webshop_orchestration(
     name_input = page.get_by_role("textbox", name="Cart name").first
     name_input.wait_for(state="visible", timeout=5000)
     name_input.click()
-    name_input.fill(email_title)
+    name_input.fill(batch_name)
 
-    page.get_by_role("textbox", name="Cart description").first.fill(cart_desc)
     page.get_by_role("button", name="Save", exact=True).first.click()
+
+    if on_batch_name:
+        try:
+            on_batch_name(batch_name)
+        except Exception as exc:
+            logger.warning("Could not persist BATCH_NAME to sheet: %s", exc)
     
     #  _wait_loaded
     try:

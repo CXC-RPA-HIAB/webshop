@@ -16,12 +16,27 @@
  */
 const EmailNotifier = {
 
+  normalizeEmailAddress: function(raw) {
+    const text = String(raw || "").trim();
+    if (!text || text.toUpperCase() === "N/A") {
+      return "";
+    }
+    const angle = text.match(/<([^>\s]+@[^>\s]+)>/);
+    if (angle) {
+      return angle[1].trim();
+    }
+    if (/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text)) {
+      return text;
+    }
+    return "";
+  },
+
   // =======================================================================================
   // 1. STAŁE KONFIGURACYJNE I STATUSY
   // =======================================================================================
 
   // ID folderu na Google Drive z oficjalnym logo HIAB
-  LOGO_FOLDER_ID: "1Ry0zPOQdTPAu10jXfK9MBWoqkr1kw7KM",
+  LOGO_FOLDER_ID: "1nOTugI-yoHVhZMk9bLwSBiiuHZnURx2k",
   
   // Nazwa pliku graficznego z logo tekstowym HIAB w folderze na Drive
   LOGO_FILE_NAME: "hiab-text-logo.png",
@@ -34,7 +49,8 @@ const EmailNotifier = {
     VALID: "VALID",                 // Plik zweryfikowany pomyślnie, oczekuje na wgranie przez robota
     FATAL: "FATAL",                 // Błąd krytyczny pliku (zły format, brak wymaganych kolumn)
     REJECTED: "REJECTED",           // Pozycje nie przeszły walidacji biznesowej / BigQuery / dane klienta
-    UPLOAD_FAILED: "UPLOAD_FAILED"  // Walidacja poprawna, lecz robot uległ awarii przy tworzeniu koszyka
+    UPLOAD_FAILED: "UPLOAD_FAILED", // Robot uległ awarii przy tworzeniu koszyka
+    CART_COMPLETED: "CART_COMPLETED" // Koszyk złożony — podsumowanie wyniku z webshopu
   },
 
   // =======================================================================================
@@ -322,11 +338,22 @@ const EmailNotifier = {
         badge: "ROBOT UPLOAD FAILED",
         badgeColor: "#ffffff",
         title: "Webshop Upload Error",
-        desc: "Validation passed, but the automation robot failed to complete the cart in the webshop.",
+        desc: "The automation robot could not complete the saved cart in the webshop.",
         bannerBg: "#8a5a12",
         titleColor: "#ffffff",
         descColor: "#f5e6c8",
         accent: "#D52B1E"
+      },
+      [this.VARIANTS.CART_COMPLETED]: {
+        badge: "SAVED CART COMPLETED",
+        badgeColor: "#15803d",
+        title: "",
+        desc: "",
+        bannerBg: "#f0fdf4",
+        titleColor: "#1e293b",
+        descColor: "#475569",
+        accent: "#15803d",
+        radius: "6px"
       },
       CUSTOMER_COMPLETED: {
         badge: "SAVED CART READY",
@@ -343,17 +370,20 @@ const EmailNotifier = {
     const cfg = configs[variant] || configs[this.VARIANTS.VALID];
     const radius = cfg.radius || "0";
 
+    const titleBlock = cfg.title
+      ? `<div style="font-size: 13px; color: ${cfg.titleColor}; font-weight: 600; margin-bottom: 2px;">${cfg.title}</div>`
+      : "";
+    const descBlock = cfg.desc
+      ? `<div style="font-size: 13px; color: ${cfg.descColor};">${cfg.desc}</div>`
+      : "";
+
     return `
       <div style="background-color: ${cfg.bannerBg}; border-radius: ${radius}; padding: 14px 18px; margin: 14px 0 18px 0; line-height: 1.5; border-left: 4px solid ${cfg.accent};">
-        <div style="font-weight: 700; font-size: 13px; color: ${cfg.badgeColor}; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 3px;">
+        <div style="font-weight: 700; font-size: 13px; color: ${cfg.badgeColor}; text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 0;">
           ${cfg.badge}
         </div>
-        <div style="font-size: 13px; color: ${cfg.titleColor}; font-weight: 600; margin-bottom: 2px;">
-          ${cfg.title}
-        </div>
-        <div style="font-size: 13px; color: ${cfg.descColor};">
-          ${cfg.desc}
-        </div>
+        ${titleBlock}
+        ${descBlock}
       </div>
     `;
   },
@@ -401,6 +431,35 @@ const EmailNotifier = {
         <tbody>
           ${rows}
         </tbody>
+      </table>
+    `;
+  },
+
+  webshopRejectedTable: function(rejectedItems) {
+    if (!rejectedItems || rejectedItems.length === 0) return "";
+
+    const rows = rejectedItems.map((entry, index) => {
+      const bg = index % 2 === 0 ? "#ffffff" : "#f7f7f7";
+      const code = entry.originalItem && entry.originalItem !== entry.item
+        ? `${entry.originalItem} &rarr; ${entry.item}`
+        : entry.item;
+      return `
+        <tr style="background-color: ${bg}; border-bottom: 1px solid #e4e6e8;">
+          <td style="padding: 11px 12px; font-size: 13px; font-weight: 700; color: #2f3941;">${code}</td>
+          <td style="padding: 11px 12px; font-size: 12px; color: #4a5560;">${entry.status}</td>
+        </tr>
+      `;
+    }).join("");
+
+    return `
+      <table cellpadding="0" cellspacing="0" border="0" width="100%" style="border-collapse: collapse; border: 1px solid #e4e6e8; margin: 10px 0 18px 0;">
+        <thead>
+          <tr style="background-color: #3d4852;">
+            <th style="padding: 11px 12px; font-size: 12px; font-weight: 700; color: #ffffff; text-align: left;">Item</th>
+            <th style="padding: 11px 12px; font-size: 12px; font-weight: 700; color: #ffffff; text-align: left;">Webshop message</th>
+          </tr>
+        </thead>
+        <tbody>${rows}</tbody>
       </table>
     `;
   },
@@ -605,8 +664,13 @@ const EmailNotifier = {
     // Status Banner
     content += this.renderStatusBanner(info.variant);
 
-    // KPI row for validation results
-    if (info.variant === this.VARIANTS.VALID || info.variant === this.VARIANTS.REJECTED || info.variant === this.VARIANTS.UPLOAD_FAILED) {
+    if (info.variant === this.VARIANTS.CART_COMPLETED) {
+      content += this.renderKpiCards([
+        { label: "Total Items", value: report.total, color: "#2f3941" },
+        { label: "In Saved Cart", value: (report.processed || []).length, color: "#15803d" },
+        { label: "Rejected", value: (report.webshopRejected || []).length, color: ((report.webshopRejected || []).length > 0 ? "#D52B1E" : "#6b7480") }
+      ]);
+    } else if (info.variant === this.VARIANTS.VALID || info.variant === this.VARIANTS.REJECTED || info.variant === this.VARIANTS.UPLOAD_FAILED) {
       content += this.renderKpiCards([
         { label: "Total Items", value: report.total, color: "#2f3941" },
         { label: "Passed", value: (report.ready || []).length, color: "#3d4852" },
@@ -699,11 +763,48 @@ const EmailNotifier = {
 
         <div style="background-color: #f7f7f7; border: 1px solid #e4e6e8; padding: 14px 16px; margin: 16px 0;">
           <p style="margin: 0; font-size: 13px; color: #4a5560; line-height: 1.5;">
-            The file passed validation (<strong style="color: #2f3941;">${report.ready.length}</strong> of <strong style="color: #2f3941;">${report.total}</strong> items were ready for upload), but the automation robot could not finalize the webshop cart.
+            The automation robot could not finalize the webshop saved cart.
             <br><br>
             <strong style="color: #2f3941;">Note:</strong> The customer has <strong>NOT</strong> been notified.
             <br>
             Please check the webshop session and retry the upload.
+          </p>
+        </div>
+      `;
+    }
+    else if (info.variant === this.VARIANTS.CART_COMPLETED) {
+      const savedCartName = String(info.savedCartName || "").trim();
+      if (savedCartName) {
+        content += `
+          <p style="margin: 0 0 16px 0; font-size: 13px; color: #4a5560;">
+            Saved cart name in webshop: <strong style="color: #2f3941;">${savedCartName}</strong>
+          </p>
+        `;
+      }
+
+      content += `
+        <div style="margin: 0 0 18px 0;">
+          <h3 style="margin: 0 0 10px 0; font-size: 15px; font-weight: 700; color: #2f3941;">Lines added to saved cart</h3>
+          ${this.renderProcessedItemsTable(report.processed || [])}
+        </div>
+      `;
+
+      if (report.webshopRejected && report.webshopRejected.length > 0) {
+        content += `
+          <div style="margin-top: 18px;">
+            <h3 style="margin: 0 0 10px 0; font-size: 15px; font-weight: 700; color: #2f3941;">Items rejected by the webshop</h3>
+            ${this.webshopRejectedTable(report.webshopRejected)}
+          </div>
+        `;
+      }
+
+      content += `
+        <div style="background-color: #f7f7f7; border: 1px solid #e4e6e8; border-left: 4px solid #15803d; padding: 14px 18px; margin-top: 18px;">
+          <div style="font-weight: 700; color: #2f3941; font-size: 13px;">Customer notification</div>
+          <p style="margin: 4px 0 0 0; font-size: 13px; color: #4a5560; line-height: 1.5;">
+            ${info.customerEmail
+              ? `Confirmation e-mail sent to <strong style="color: #2f3941;">${info.customerEmail}</strong>.`
+              : "No customer e-mail in column N — only this internal summary was sent."}
           </p>
         </div>
       `;
@@ -737,11 +838,34 @@ const EmailNotifier = {
       footerNote: "Please do not reply directly to this notification email."
     });
 
-    message.reply("", {
+    const replyOptions = {
       htmlBody: emailBody,
       name: this.SENDER_NAME,
       inlineImages: inlineImages
-    });
+    };
+    const directTo = this.normalizeEmailAddress(info.deliveryTo);
+    if (directTo) {
+      GmailApp.sendEmail(
+        directTo,
+        info.emailSubject || "Hiab Deals Submission Overview",
+        "",
+        replyOptions
+      );
+      return;
+    }
+    if (!message) {
+      throw new Error("sendInternalFeedback requires a Gmail message or info.deliveryTo for direct send.");
+    }
+    try {
+      message.reply("", replyOptions);
+    } catch (replyError) {
+      const to = this.normalizeEmailAddress(message.getFrom());
+      if (!to) {
+        throw replyError;
+      }
+      Logger.log(`message.reply failed (${replyError.message}); sending internal mail to ${to}`);
+      GmailApp.sendEmail(to, "Re: " + (message.getSubject() || "Hiab Deals submission"), "", replyOptions);
+    }
   },
 
   // =======================================================================================
@@ -759,7 +883,7 @@ const EmailNotifier = {
    *   @param {string} info.customerEmail - Docelowy adres e-mail klienta
    *   @param {string} info.customerName - Nazwa firmy / klienta
    *   @param {string} [info.internalEmail] - Opcjonalny adres reply-to do przedstawiciela HIAB
-   *   @param {string} [info.savedCartName] - Nazwa zapisanego koszyka w webshopie (EMAIL_TITLE)
+   *   @param {string} [info.savedCartName] - Nazwa zapisanego koszyka w webshopie (BATCH_NAME / column P)
    *   @param {Object} info.buckets - Koszyki pozycji: { unavailable: [], obsolete: [], replaced: [] }
    *   @param {Array<{item: string, label: string, quantity: number}>} [info.processedItems] - Pozycje wgrane do webshopu
    */
@@ -773,8 +897,8 @@ const EmailNotifier = {
       buckets.replaced.length > 0;
 
     const cartLine = savedCartName
-      ? `Your order has been saved in the Hiab webshop as a saved cart named <strong style="color: #2f3941;">${savedCartName}</strong>.`
-      : `Your order has been saved as a saved cart in the Hiab webshop.`;
+      ? `Your order has been saved in the webshop as a saved cart named <strong style="color: #2f3941;">${savedCartName}</strong>.`
+      : `Your order has been saved as a saved cart in the Webshop.`;
 
     let content = `
       <p style="margin: 0 0 14px 0; font-size: 16px; color: #2f3941;">Hello <strong>${info.customerName}</strong>,</p>
@@ -870,11 +994,20 @@ const EmailNotifier = {
       footerNote: "Please contact your customer support representative if you have any questions."
     });
 
-    GmailApp.sendEmail(info.customerEmail, "Your HIAB saved cart is ready", "", {
+    const to = this.normalizeEmailAddress(info.customerEmail);
+    if (!to) {
+      throw new Error("customerEmail is missing or invalid");
+    }
+    const mailOptions = {
       htmlBody: emailBody,
       name: this.SENDER_NAME,
-      replyTo: info.internalEmail || CONFIG.TARGET_EMAIL,
       inlineImages: inlineImages
-    });
+    };
+    const replyTo = this.normalizeEmailAddress(info.internalEmail) ||
+      this.normalizeEmailAddress(CONFIG.TARGET_EMAIL);
+    if (replyTo) {
+      mailOptions.replyTo = replyTo;
+    }
+    GmailApp.sendEmail(to, "Your HIAB saved cart is ready", "", mailOptions);
   }
 };

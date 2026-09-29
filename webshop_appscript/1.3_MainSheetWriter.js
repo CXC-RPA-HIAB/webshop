@@ -5,7 +5,7 @@ const SheetHelper = {
     
     mainSheet.insertRowAfter(1);
     
-    // 11 Columns matching the new MAIN sheet layout
+    // MAIN A–P (16 columns)
     const rowData = [
       mainRecord.EMAIL_ID,
       mainRecord.EMAIL,
@@ -20,7 +20,9 @@ const SheetHelper = {
       mainRecord.TIMESTAMP_EMAIL_RECEIVE,
       mainRecord.TIMESTAMP_PROCESSED_AT,
       mainRecord.TITLE,
-      mainRecord.CUSTOMER_EMAIL
+      mainRecord.CUSTOMER_EMAIL,
+      mainRecord.INTERNAL_EMAIL || "",
+      mainRecord.BATCH_NAME || ""
     ];
     
     mainSheet.getRange(2, 1, 1, rowData.length).setValues([rowData]);
@@ -32,10 +34,17 @@ const SheetHelper = {
     const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
     const sheet = ss.getSheetByName(CONFIG.SHEETS.MAIN);
     
-    // Column 7 (G) = ACTIVE_PHASE, Column 8 (H) = MANUAL_PHASE
-    sheet.getRange(rowIndex, 7).setValue(activePhase); 
-    sheet.getRange(rowIndex, 8).setValue(manualPhase); 
-    sheet.getRange(rowIndex, 9).setValue(robotPhase);
+    // Column 7 (G) = ACTIVE_PHASE (always 5_VALID for the robot), Column 8 (H) = MANUAL_PHASE
+    const activePhaseStr = String(activePhase);
+    let manualValue = manualPhase;
+    if (activePhaseStr.indexOf(CONFIG.PHASES.ERROR) === 0) {
+      manualValue = activePhaseStr;
+    }
+    sheet.getRange(rowIndex, 7).setValue(CONFIG.PHASES.VALID);
+    sheet.getRange(rowIndex, 8).setValue(manualValue);
+    if (robotPhase !== null && robotPhase !== undefined) {
+      sheet.getRange(rowIndex, 9).setValue(robotPhase);
+    }
     
     SpreadsheetApp.flush();
   },
@@ -109,7 +118,7 @@ updateSmartChip: function(rowIndex, colIndex, fileUrl) {
       attachmentName,
       item.ITEM_NAME,
       item.ITEM_COUNT,
-      CONFIG.ITEM_STATUS.PENDING_BQ,
+      CONFIG.ITEM_STATUS.QUEUED,
       ""
     ]);
     
@@ -130,20 +139,21 @@ updateSmartChip: function(rowIndex, colIndex, fileUrl) {
     
     mainSheet.insertRowAfter(1);
     
-    // 11 Columns: Placeholders for client/file info, properly positioned phases and dates
     const rowData = [
-      emailId, 
-      "N/A", 
-      "N/A", 
-      "N/A", 
-      "N/A", 
-      "N/A", 
-      activePhaseWithError, 
-      exactManualPhase, 
-      "", 
+      emailId,
+      "N/A",
+      "N/A",
+      "N/A",
+      "N/A",
+      "N/A",
+      CONFIG.PHASES.VALID,
+      activePhaseWithError,
+      "",
       "NO",
-      new Date(), 
       new Date(),
+      new Date(),
+      "",
+      "",
       "",
       ""
     ];

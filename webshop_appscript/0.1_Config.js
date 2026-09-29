@@ -1,15 +1,28 @@
 const CONFIG = {
   SPREADSHEET_ID: "15YDKASd6QCWy9HOL7YKPTVOCMWMnzZ-a4fYKX3vLb0Q", 
-  ROOT_FOLDER_ID: "1htd1C1LhpussQI2RA94Qgwhd6pD2UxDI",
+  ROOT_FOLDER_ID: "1nOTugI-yoHVhZMk9bLwSBiiuHZnURx2k",
   TARGET_EMAIL: "hiabdeals@hiab.com",
-  BQ_PROJECT_ID: "s-bicloud-curated-0001-p",
-  
   LABELS: {
     NEW: "WEBSHOP/NEW",
     PROCESSING: "WEBSHOP/PROCESSING",
     NOTIFIED: "WEBSHOP/NOTIFIED",
     ERROR: "WEBSHOP/ERROR",
     FINISHED: "WEBSHOP/FINISHED"
+  },
+
+  /** Fallback if CONFIG.LABELS is missing in a deployed copy */
+  defaultLabel: function(key) {
+    const defaults = {
+      NEW: "WEBSHOP/NEW",
+      PROCESSING: "WEBSHOP/PROCESSING",
+      NOTIFIED: "WEBSHOP/NOTIFIED",
+      ERROR: "WEBSHOP/ERROR",
+      FINISHED: "WEBSHOP/FINISHED"
+    };
+    if (typeof CONFIG !== "undefined" && CONFIG.LABELS && CONFIG.LABELS[key]) {
+      return CONFIG.LABELS[key];
+    }
+    return defaults[key] || "";
   },
   
   SHEETS: {
@@ -42,7 +55,8 @@ PHASES: {
     ANOTHER_PROBLEM: "another problem (contact with webshop support)",
     NO_GLOBAL_PRICE: "no_global_price",
     BLOCKED: "blocked",
-    PENDING_BQ: "PENDING_BQ"
+    PENDING_BQ: "PENDING_BQ",
+    QUEUED: "queued"
   },
 
   MATCH_TYPE: {
@@ -51,10 +65,10 @@ PHASES: {
     FAILED: "failed"
   },
 
-  // EMAIL_FEEDBACK (column J): NO -> INTERNAL_SENT (awaiting bot) -> terminal states
+  // EMAIL_FEEDBACK (column J): NO until robot/appscript terminal event, then terminal states
   FEEDBACK_STATES: {
     PENDING: "NO",
-    INTERNAL_SENT: "INTERNAL_SENT",
+    INTERNAL_SENT: "INTERNAL_SENT", // legacy / parse-error-only internal mail
     INTERNAL_AND_EXTERNAL_SENT: "INTERNAL_AND_EXTERNAL_SENT",
     INTERNAL_ONLY: "INTERNAL_ONLY",
     INTERNAL_ONLY_UPLOAD_FAILED: "INTERNAL_ONLY_UPLOAD_FAILED"

@@ -1,39 +1,45 @@
-// MAIN column indexes (0-based) used by both feedback stages.
+// MAIN column indexes (0-based) — must match sheet headers A–P:
+// email_id, client_mail, client_number, client_name, attachment_name, attachments_path,
+// active_phase, manual_phase, robot_phase, email_feedback, timestamp_email_receive,
+// timestamp_processed_at, email_title, customer_email, internal_email, batch_name
 const MAIN_COL = {
   EMAIL_ID: 0,
   CLIENT_MAIL: 1,
   CUSTOMER_NUMBER: 2,
   CUSTOMER_NAME: 3,
   ATTACHMENT_NAME: 4,
+  ATTACHMENTS_PATH: 5,
   ACTIVE_PHASE: 6,
   MANUAL_PHASE: 7,
   ROBOT_PHASE: 8,
   EMAIL_FEEDBACK: 9,
+  TIMESTAMP_EMAIL_RECEIVE: 10,
+  TIMESTAMP_PROCESSED_AT: 11,
   EMAIL_TITLE: 12,
-  CUSTOMER_EMAIL: 13
+  CUSTOMER_EMAIL: 13,
+  INTERNAL_EMAIL: 14,
+  BATCH_NAME: 15
 };
+
+
 
 const EMAIL_FEEDBACK_COLUMN = 10;
 
-function getOrCreateLabel(labelName) {
-  let label = GmailApp.getUserLabelByName(labelName);
-  if (!label) {
-    label = GmailApp.createLabel(labelName);
-    Logger.log(`Created missing label: ${labelName}`);
-  }
-  return label;
-}
 
-// Enforces one base label (ERROR / FINISHED) plus NOTIFIED and makes the thread stand out.
+
 function applyFinalLabels(thread, targetBaseLabelName) {
-  const targetLabel = getOrCreateLabel(targetBaseLabelName);
-  const notifiedLabel = getOrCreateLabel(CONFIG.LABELS.NOTIFIED);
+  const targetLabel = GmailHelper.getOrCreateLabel(targetBaseLabelName);
+  const notifiedLabel = GmailHelper.getOrCreateLabel(GmailHelper.labelName("NOTIFIED"));
+  if (!targetLabel || !notifiedLabel) {
+    Logger.log("applyFinalLabels: could not resolve Gmail labels; thread labels skipped.");
+    return;
+  }
 
   const allBaseLabels = [
-    GmailApp.getUserLabelByName(CONFIG.LABELS.NEW),
-    GmailApp.getUserLabelByName(CONFIG.LABELS.PROCESSING),
-    GmailApp.getUserLabelByName(CONFIG.LABELS.ERROR),
-    GmailApp.getUserLabelByName(CONFIG.LABELS.FINISHED)
+    GmailApp.getUserLabelByName(GmailHelper.labelName("NEW")),
+    GmailApp.getUserLabelByName(GmailHelper.labelName("PROCESSING")),
+    GmailApp.getUserLabelByName(GmailHelper.labelName("ERROR")),
+    GmailApp.getUserLabelByName(GmailHelper.labelName("FINISHED"))
   ];
 
   allBaseLabels.forEach(lbl => {
@@ -47,184 +53,334 @@ function applyFinalLabels(thread, targetBaseLabelName) {
   thread.markUnread();
 }
 
-// The person who submitted the file is the sender of the original email.
+
+
 function internalSenderName(message) {
+
   const from = String(message.getFrom() || "");
+
   const displayName = from.match(/^\s*"?([^"<]+?)"?\s*</);
+
   if (displayName && displayName[1].trim()) {
+
     return displayName[1].trim();
+
   }
+
+
 
   const address = from.match(/<([^>]+)>/);
+
   return String(address ? address[1] : from).split("@")[0] || "there";
+
 }
+
+
 
 function customerNameFromRow(row) {
+
   const name = String(row[MAIN_COL.CUSTOMER_NAME] || "").trim();
+
   return (name && name !== "N/A") ? name : "Customer";
+
 }
 
-// The robot writes ROBOT_PHASE as "FINISHED" or "ERROR - <reason>".
-const ROBOT_FINISHED = "FINISHED";
+function internalEmailFromRow(row) {
+  const dedicated = EmailNotifier.normalizeEmailAddress(row[MAIN_COL.INTERNAL_EMAIL]);
+  if (dedicated) return dedicated;
+  return EmailNotifier.normalizeEmailAddress(row[MAIN_COL.CLIENT_MAIL]);
+}
+
+function isLikelyGmailMessageId(emailId) {
+  const id = String(emailId || "").trim();
+  return id.length >= 12 && /^[a-f0-9]+$/i.test(id);
+}
+
+
 
 function robotFailureReason(robotPhase) {
-  if (robotPhase.indexOf("ERROR") !== 0) return null;
-  return robotPhase.split(" - ").slice(1).join(" - ") || "Unknown robot error";
+
+  const phase = String(robotPhase || "").trim();
+
+  if (phase.indexOf("ERROR") !== 0) return null;
+
+  return phase.split(" - ").slice(1).join(" - ") || "Unknown robot error";
+
 }
 
-// -1_ERROR rows carry the reason after the phase name: "-1_ERROR - <reason>".
-function describeError(activePhase) {
-  const reason = activePhase.split(" - ").slice(1).join(" - ") || "Unknown Error";
+
+
+function isRobotFinished(robotPhase) {
+
+  const phase = String(robotPhase || "").trim();
+
+  return phase === "FINISHED" || phase.indexOf("FINISHED") === 0;
+
+}
+
+
+
+function appsScriptErrorPhase(manualPhase, legacyActivePhase) {
+
+  const manual = String(manualPhase || "").trim();
+
+  if (manual.indexOf(CONFIG.PHASES.ERROR) === 0) return manual;
+
+  const legacy = String(legacyActivePhase || "").trim();
+
+  if (legacy.indexOf(CONFIG.PHASES.ERROR) === 0) return legacy;
+
+  return "";
+
+}
+
+
+
+function describeError(errorPhase) {
+
+  const reason = errorPhase.split(" - ").slice(1).join(" - ") || "Unknown Error";
+
+
 
   if (reason.includes("Invalid items") || reason.includes("CLIENT_ERROR")) {
+
     return { variant: EmailNotifier.VARIANTS.REJECTED, message: reason };
+
   }
+
   if (reason.includes("Unsupported file format")) {
+
     return { variant: EmailNotifier.VARIANTS.FATAL, message: "invalid type of file (only xlsx, csv)" };
+
   }
+
+
 
   return { variant: EmailNotifier.VARIANTS.FATAL, message: reason };
+
 }
 
-// Stage 1: technical overview for the operator, sent as soon as the file reaches
-// 5_VALID or -1_ERROR. EMAIL_FEEDBACK moves NO -> INTERNAL_SENT.
-function sendInternalFeedbackEmails() {
+
+
+// Single pass after the robot finishes (or Apps Script parse failure before the bot runs).
+
+function processFeedbackEmails() {
+
+  GmailHelper.ensureLabelsExist();
+
   const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
+
   const mainSheet = ss.getSheetByName(CONFIG.SHEETS.MAIN);
+
   const data = mainSheet.getDataRange().getValues();
 
+
+
   for (let i = 1; i < data.length; i++) {
+
     const rowIdx = i + 1;
+
     const row = data[i];
+
+
 
     if (String(row[MAIN_COL.EMAIL_FEEDBACK]).trim() !== CONFIG.FEEDBACK_STATES.PENDING) continue;
 
-    const activePhase = String(row[MAIN_COL.ACTIVE_PHASE]).trim();
-    const isValid = activePhase === CONFIG.PHASES.VALID;
-    const isError = activePhase.indexOf(CONFIG.PHASES.ERROR) === 0;
 
-    if (!isValid && !isError) continue;
 
-    const emailId = row[MAIN_COL.EMAIL_ID];
-    // The robot can already have failed before this trigger ran.
-    const robotFailure = isValid ? robotFailureReason(String(row[MAIN_COL.ROBOT_PHASE]).trim()) : null;
+    const manualPhase = String(row[MAIN_COL.MANUAL_PHASE] || "").trim();
 
-    let variant = EmailNotifier.VARIANTS.VALID;
-    let errorMessage = "";
+    const robotPhase = String(row[MAIN_COL.ROBOT_PHASE] || "").trim();
 
-    if (isError) {
-      const errorInfo = describeError(activePhase);
-      variant = errorInfo.variant;
-      errorMessage = errorInfo.message;
-    } else if (robotFailure) {
-      variant = EmailNotifier.VARIANTS.UPLOAD_FAILED;
-      errorMessage = robotFailure;
+    const legacyActivePhase = String(row[MAIN_COL.ACTIVE_PHASE] || "").trim();
+
+    const errorPhase = appsScriptErrorPhase(manualPhase, legacyActivePhase);
+
+    const robotFailure = robotFailureReason(robotPhase);
+
+    const robotDone = isRobotFinished(robotPhase);
+
+
+
+    if (!errorPhase && !robotFailure && !robotDone) continue;
+
+
+
+    const emailId = String(row[MAIN_COL.EMAIL_ID] || "").trim();
+
+    const customerEmail = EmailNotifier.normalizeEmailAddress(row[MAIN_COL.CUSTOMER_EMAIL]);
+
+    if (!isLikelyGmailMessageId(emailId)) {
+      Logger.log(`Row ${rowIdx}: invalid or missing email_id "${emailId}" — feedback skipped.`);
+      continue;
     }
 
     try {
-      const message = GmailApp.getMessageById(emailId);
-      if (!message) continue;
 
-      EmailNotifier.sendInternalFeedback(message, {
-        internalName: internalSenderName(message),
-        customerName: customerNameFromRow(row),
-        customerNumber: String(row[MAIN_COL.CUSTOMER_NUMBER] || "").trim(),
-        customerEmail: String(row[MAIN_COL.CUSTOMER_EMAIL] || "").trim(),
-        attachmentName: row[MAIN_COL.ATTACHMENT_NAME],
-        variant: variant,
-        errorMessage: errorMessage,
-        report: ItemsReport.build(ss, emailId)
-      });
-
-      if (variant === EmailNotifier.VARIANTS.VALID) {
-        // Thread stays in WEBSHOP/PROCESSING until the robot finishes the upload.
-        SheetHelper.updateCell(rowIdx, EMAIL_FEEDBACK_COLUMN, CONFIG.FEEDBACK_STATES.INTERNAL_SENT);
-      } else {
-        applyFinalLabels(message.getThread(), CONFIG.LABELS.ERROR);
-        const terminalState = variant === EmailNotifier.VARIANTS.UPLOAD_FAILED
-          ? CONFIG.FEEDBACK_STATES.INTERNAL_ONLY_UPLOAD_FAILED
-          : CONFIG.FEEDBACK_STATES.INTERNAL_SENT;
-        SheetHelper.updateCell(rowIdx, EMAIL_FEEDBACK_COLUMN, terminalState);
+      let message;
+      try {
+        message = GmailApp.getMessageById(emailId);
+      } catch (idError) {
+        Logger.log(`Row ${rowIdx}: getMessageById failed: ${idError.message}`);
+        continue;
       }
 
-    } catch (error) {
-      Logger.log(`Failed to send internal feedback for row ${rowIdx}: ${error.message}`);
-    }
-  }
-}
-
-// Stage 2: plain-language confirmation for the customer once the robot reports FINISHED.
-// EMAIL_FEEDBACK moves INTERNAL_SENT -> INTERNAL_AND_EXTERNAL_SENT / INTERNAL_ONLY / INTERNAL_ONLY_UPLOAD_FAILED.
-function sendCustomerFeedbackEmails() {
-  const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
-  const mainSheet = ss.getSheetByName(CONFIG.SHEETS.MAIN);
-  const data = mainSheet.getDataRange().getValues();
-
-  for (let i = 1; i < data.length; i++) {
-    const rowIdx = i + 1;
-    const row = data[i];
-
-    if (String(row[MAIN_COL.EMAIL_FEEDBACK]).trim() !== CONFIG.FEEDBACK_STATES.INTERNAL_SENT) continue;
-
-    const robotPhase = String(row[MAIN_COL.ROBOT_PHASE]).trim();
-    const robotFailure = robotFailureReason(robotPhase);
-    if (robotPhase !== ROBOT_FINISHED && !robotFailure) continue;
-
-    const emailId = row[MAIN_COL.EMAIL_ID];
-    //const customerEmail = String(row[MAIN_COL.CUSTOMER_EMAIL] || "").trim();
-    const customerEmail = "sekulam98@gmail.com";
-
-    try {
-      const message = GmailApp.getMessageById(emailId);
       if (!message) continue;
 
-      // The robot failed after validation: tell the operator, never the customer.
-      if (robotFailure) {
+
+
+      const report = ItemsReport.build(ss, emailId);
+
+      const baseInfo = {
+
+        internalName: internalSenderName(message),
+
+        customerName: customerNameFromRow(row),
+
+        customerNumber: String(row[MAIN_COL.CUSTOMER_NUMBER] || "").trim(),
+
+        customerEmail: customerEmail,
+
+        attachmentName: row[MAIN_COL.ATTACHMENT_NAME],
+
+        report: report
+
+      };
+
+
+
+      if (errorPhase) {
+
+        const errorInfo = describeError(errorPhase);
+
         EmailNotifier.sendInternalFeedback(message, {
-          internalName: internalSenderName(message),
-          customerName: customerNameFromRow(row),
-          customerNumber: String(row[MAIN_COL.CUSTOMER_NUMBER] || "").trim(),
-          customerEmail: customerEmail,
-          attachmentName: row[MAIN_COL.ATTACHMENT_NAME],
-          variant: EmailNotifier.VARIANTS.UPLOAD_FAILED,
-          errorMessage: robotFailure,
-          report: ItemsReport.build(ss, emailId)
+
+          internalName: baseInfo.internalName,
+
+          customerName: baseInfo.customerName,
+
+          customerNumber: baseInfo.customerNumber,
+
+          customerEmail: baseInfo.customerEmail,
+
+          attachmentName: baseInfo.attachmentName,
+
+          variant: errorInfo.variant,
+
+          errorMessage: errorInfo.message,
+
+          report: report
+
         });
 
-        applyFinalLabels(message.getThread(), CONFIG.LABELS.ERROR);
-        SheetHelper.updateCell(rowIdx, EMAIL_FEEDBACK_COLUMN, CONFIG.FEEDBACK_STATES.INTERNAL_ONLY_UPLOAD_FAILED);
+        try {
+          applyFinalLabels(message.getThread(), GmailHelper.labelName("ERROR"));
+        } catch (labelError) {
+          Logger.log(`Gmail labels (ERROR) skipped for row ${rowIdx}: ${labelError.message}`);
+        }
+
+        SheetHelper.updateCell(rowIdx, EMAIL_FEEDBACK_COLUMN, CONFIG.FEEDBACK_STATES.INTERNAL_SENT);
+
         continue;
+
+      }
+
+
+
+      if (robotFailure) {
+
+        EmailNotifier.sendInternalFeedback(message, {
+
+          internalName: baseInfo.internalName,
+
+          customerName: baseInfo.customerName,
+
+          customerNumber: baseInfo.customerNumber,
+
+          customerEmail: baseInfo.customerEmail,
+
+          attachmentName: baseInfo.attachmentName,
+
+          variant: EmailNotifier.VARIANTS.UPLOAD_FAILED,
+
+          errorMessage: robotFailure,
+
+          report: report
+
+        });
+
+        try {
+          applyFinalLabels(message.getThread(), GmailHelper.labelName("ERROR"));
+        } catch (labelError) {
+          Logger.log(`Gmail labels (ERROR) skipped for row ${rowIdx}: ${labelError.message}`);
+        }
+
+        SheetHelper.updateCell(rowIdx, EMAIL_FEEDBACK_COLUMN, CONFIG.FEEDBACK_STATES.INTERNAL_ONLY_UPLOAD_FAILED);
+
+        continue;
+
+      }
+
+
+
+      try {
+        EmailNotifier.sendInternalFeedback(message, {
+          internalName: baseInfo.internalName,
+          customerName: baseInfo.customerName,
+          customerNumber: baseInfo.customerNumber,
+          customerEmail: baseInfo.customerEmail,
+          attachmentName: baseInfo.attachmentName,
+          variant: EmailNotifier.VARIANTS.CART_COMPLETED,
+          errorMessage: "",
+          report: report,
+          savedCartName: String(row[MAIN_COL.BATCH_NAME] || "").trim()
+        });
+      } catch (internalError) {
+        Logger.log(`Row ${rowIdx}: internal feedback failed: ${internalError.message}`);
+        throw internalError;
       }
 
       let feedbackState = CONFIG.FEEDBACK_STATES.INTERNAL_ONLY;
 
       if (customerEmail) {
-        const report = ItemsReport.build(ss, emailId);
-
-        EmailNotifier.sendCustomerFeedback({
-          customerEmail: customerEmail,
-          customerName: customerNameFromRow(row),
-          internalEmail: String(row[MAIN_COL.CLIENT_MAIL] || "").trim(),
-          // The robot names the webshop saved cart after EMAIL_TITLE (column M).
-          savedCartName: String(row[MAIN_COL.EMAIL_TITLE] || "").trim(),
-          buckets: ItemsReport.customerBuckets(report),
-          processedItems: report.processed
-        });
-        feedbackState = CONFIG.FEEDBACK_STATES.INTERNAL_AND_EXTERNAL_SENT;
+        try {
+          EmailNotifier.sendCustomerFeedback({
+            customerEmail: customerEmail,
+            customerName: baseInfo.customerName,
+            internalEmail: internalEmailFromRow(row),
+            savedCartName: String(row[MAIN_COL.BATCH_NAME] || "").trim(),
+            buckets: ItemsReport.customerBuckets(report),
+            processedItems: report.processed
+          });
+          feedbackState = CONFIG.FEEDBACK_STATES.INTERNAL_AND_EXTERNAL_SENT;
+        } catch (customerError) {
+          Logger.log(`Row ${rowIdx}: customer feedback failed: ${customerError.message}`);
+          feedbackState = CONFIG.FEEDBACK_STATES.INTERNAL_ONLY;
+        }
       } else {
-        Logger.log(`No customer_email in column N for row ${rowIdx}; customer notification skipped.`);
+        Logger.log(`No valid customer_email in column N for row ${rowIdx}; customer notification skipped.`);
       }
 
-      applyFinalLabels(message.getThread(), CONFIG.LABELS.FINISHED);
+
+
+      try {
+        applyFinalLabels(message.getThread(), GmailHelper.labelName("FINISHED"));
+      } catch (labelError) {
+        Logger.log(`Gmail labels (FINISHED) skipped for row ${rowIdx}: ${labelError.message}`);
+      }
+
       SheetHelper.updateCell(rowIdx, EMAIL_FEEDBACK_COLUMN, feedbackState);
 
+
+
     } catch (error) {
-      Logger.log(`Failed to send customer feedback for row ${rowIdx}: ${error.message}`);
+      const detail = error && error.message ? error.message : String(error);
+      const stack = error && error.stack ? error.stack : "";
+      Logger.log(`Failed to send feedback for row ${rowIdx}: ${detail}${stack ? " | " + stack : ""}`);
     }
+
   }
+
 }
 
-function processFeedbackEmails() {
-  sendInternalFeedbackEmails();
-  sendCustomerFeedbackEmails();
-}
+

@@ -149,6 +149,35 @@ def set_robot_phase(
     return row
 
 
+def set_batch_name(
+    sheet: gspread.Worksheet,
+    batch_name: str,
+    config=None,
+    *,
+    email_id: Optional[str] = None,
+    row_number: Optional[int] = None,
+) -> int:
+    """
+    Write BATCH_NAME (MAIN column P) — saved cart name chosen by the robot.
+    Returns the 1-based row that was updated.
+    """
+    config = config or load_config()
+    row = _resolve_edit_row(sheet, email_id, row_number, config)
+    headers = sheet.row_values(1)
+
+    col_idx = _get_col_idx(headers, "batch_name", fallback_idx=16)
+
+    text = str(batch_name or "").strip()
+    safe_update_cell(sheet, row, col_idx, text)
+    logger.info(
+        "BATCH_NAME email_id=%s row %s -> %s",
+        email_id or "(none)",
+        row,
+        text,
+    )
+    return row
+
+
 def set_manual_phase(
     sheet: gspread.Worksheet,
     phase: str,
@@ -317,15 +346,16 @@ def find_pending_orders(sheet: gspread.Worksheet,config=None) -> pd.DataFrame:
     robot_col = full_df.get("robot_phase", pd.Series("", index=full_df.index)).astype(str)
     active_col = full_df.get("active_phase", pd.Series("", index=full_df.index)).astype(str)
 
+    robot_stripped = robot_col.str.strip()
     pending_mask = (
         (manual_col.str.strip().str.upper() == "PROCESSING") &
-        (robot_col.str.strip() == "READY") &
+        (robot_stripped.eq("") | robot_stripped.str.upper().eq("READY")) &
         (active_col.str.strip().str.upper() == "5_VALID")
     )
     pending_orders_df = full_df[pending_mask]
 
     logger.info(
-        "Found %s pending order row(s) manual_phase=PROCESSING, robot_phase READY, active_phase=5_VALID).",
+        "Found %s pending order row(s) (manual_phase=PROCESSING, robot_phase empty or READY, active_phase=5_VALID).",
         len(pending_orders_df),
     )
     return pending_orders_df

@@ -16,6 +16,7 @@ from logging_setup import get_logger
 from spreadsheet_processing import (
     extract_order_payload,
     find_pending_orders,
+    set_batch_name,
     set_manual_phase,
     set_robot_phase,
     set_timestamp_processed_at,
@@ -67,6 +68,11 @@ def process_single_order(
             sheet, phase, detail, config, email_id=order.email_id, row_number=order.row_number,
         )
 
+    def on_batch_name(name: str) -> None:
+        order["row_number"] = set_batch_name(
+            sheet, name, config, email_id=order.email_id, row_number=order.row_number,
+        )
+
     owns_profile = profile is None
     batch_files: list[Path] = []
     
@@ -114,6 +120,7 @@ def process_single_order(
             batch_csvs=payload.batch_files,
             config=config,
             on_phase=on_phase,
+            on_batch_name=on_batch_name,
             require_existing_session=require_existing_session,
         ) or {}
 
@@ -198,7 +205,7 @@ def process_emails(
     pending_orders_df = find_pending_orders(main_sheet, config)
     
     if pending_orders_df.empty:
-        msg = "No rows ready (MANUAL_PHASE=PROCESSING & ROBOT_PHASE empty & ACTIVE_PHASE=5_VALID)."
+        msg = "No rows ready (MANUAL_PHASE=PROCESSING & ROBOT_PHASE empty/READY & ACTIVE_PHASE=5_VALID)."
         if quiet_when_idle:
             logger.debug(msg)
         else:

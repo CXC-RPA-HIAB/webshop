@@ -37,6 +37,7 @@ def test_spreadsheet_read():
         "MANUAL_PHASE": "manual_phase",
         "ROBOT_PHASE": "robot_phase",
         "EMAIL_TITLE": "email_title",
+        "BATCH_NAME": "batch_name",
         "ACTIVE_PHASE": "active_phase"
     })
     

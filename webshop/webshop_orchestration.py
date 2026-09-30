@@ -24,6 +24,195 @@ logger = get_logger()
 PhaseCallback = Callable[[str, str], None]
 
 FAILED_CONTAINER = "#uc-failed-orderlines"
+_SAVED_CART_DESC = "Hiab order (automated)"
+_CREATE_NEW_CART = "Create new cart"
+
+
+def _create_new_cart_button(page: Page):
+    return page.get_by_role("button", name=_CREATE_NEW_CART).first
+
+
+def _saved_carts_panel_visible(page: Page) -> bool:
+    create_btn = _create_new_cart_button(page)
+    try:
+        return create_btn.count() > 0 and create_btn.is_visible()
+    except Exception:
+        return False
+
+
+def _open_saved_carts_panel(page: Page, *, timeout_ms: int = 30_000) -> None:
+    """Open the Saved carts off-canvas; wait until 'Create new cart' is visible."""
+    if _saved_carts_panel_visible(page):
+        logger.info("Saved carts panel already open.")
+        return
+
+    toggle_selectors = (
+        'button.right-off-canvas-toggle[title*="Saved carts"]:visible',
+        "button.wishlist-toggle:visible",
+        'button[title*="Saved carts"]:visible',
+        ".right-off-canvas-toggle:visible",
+    )
+    deadline = time.time() + timeout_ms / 1000.0
+    last_error: Exception | None = None
+
+    while time.time() < deadline:
+        if _saved_carts_panel_visible(page):
+            logger.info("Saved carts panel is open.")
+            return
+
+        for selector in toggle_selectors:
+            toggle = page.locator(selector).first
+            try:
+                if toggle.count() == 0 or not toggle.is_visible():
+                    continue
+                logger.info("Clicking Saved carts toggle (%s)", selector)
+                toggle.click(force=True, timeout=5000)
+                _create_new_cart_button(page).wait_for(state="visible", timeout=8000)
+                logger.info("Saved carts panel is open.")
+                return
+            except Exception as exc:
+                last_error = exc
+                continue
+
+        time.sleep(0.4)
+
+    raise RuntimeError(
+        "Saved carts panel did not open — 'Create new cart' never became visible. "
+        f"Last click error: {last_error!r}"
+    )
+
+
+def _dispatch_field_events(field) -> None:
+    """Notify Angular/React validators after programmatic fill."""
+    field.evaluate(
+        """el => {
+            el.dispatchEvent(new Event('input', { bubbles: true }));
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            el.dispatchEvent(new Event('blur', { bubbles: true }));
+        }"""
+    )
+
+
+def _visible_wishlist_save_button(page: Page):
+    """Pick the Save button the user sees — DOM may contain hidden disabled copies."""
+    scoped = page.locator('div.medium-6.columns button[name="Wishlist.Save"]')
+    try:
+        if scoped.count() > 0 and scoped.last.is_visible():
+            return scoped.last
+    except Exception:
+        pass
+
+    buttons = page.locator('button[name="Wishlist.Save"]')
+    try:
+        count = buttons.count()
+    except Exception:
+        count = 0
+    visible = []
+    for index in range(count):
+        btn = buttons.nth(index)
+        try:
+            if btn.is_visible():
+                visible.append(btn)
+        except Exception:
+            continue
+    if not visible:
+        return None
+    return visible[-1]
+
+
+def _wishlist_save_is_clickable(btn) -> bool:
+    try:
+        return not btn.evaluate(
+            """el => !!(
+                el.disabled ||
+                el.getAttribute('aria-disabled') === 'true' ||
+                el.classList.contains('disabled')
+            )"""
+        )
+    except Exception:
+        return False
+
+
+def _click_wishlist_save(page: Page, *, batch_name: str, name_input, timeout_ms: int) -> None:
+    deadline = time.time() + timeout_ms / 1000.0
+    last_states: list[str] = []
+
+    while time.time() < deadline:
+        save_btn = _visible_wishlist_save_button(page)
+        if save_btn is None:
+            last_states.append("no visible Wishlist.Save")
+            time.sleep(0.25)
+            continue
+
+        clickable = _wishlist_save_is_clickable(save_btn)
+        last_states.append(f"visible clickable={clickable}")
+        if clickable:
+            save_btn.scroll_into_view_if_needed(timeout=3000)
+            logger.info("Clicking visible Wishlist.Save for cart %s", batch_name)
+            try:
+                save_btn.click(timeout=10_000)
+            except Exception as exc:
+                logger.warning("Wishlist.Save normal click failed (%s), retrying with force=True", exc)
+                save_btn.click(force=True, timeout=5000)
+            return
+        time.sleep(0.25)
+
+    try:
+        shown = name_input.input_value()
+    except Exception:
+        shown = "?"
+    tail = last_states[-5:] if last_states else []
+    raise RuntimeError(
+        f"Could not click visible Wishlist.Save for cart name {batch_name!r} "
+        f"(Cart name field={shown!r}). Recent checks: {tail}"
+    )
+
+
+def _fill_and_save_new_cart(page: Page, batch_name: str, *, timeout_ms: int = 60_000) -> None:
+    """Create saved cart dialog: name + description, then Save when enabled."""
+    create_btn = _create_new_cart_button(page)
+    create_btn.wait_for(state="visible", timeout=5000)
+    create_btn.click()
+    time.sleep(0.5)
+
+    name_input = page.get_by_role("textbox", name="Cart name").first
+    name_input.wait_for(state="visible", timeout=10_000)
+    name_input.click()
+    name_input.fill("")
+    name_input.fill(batch_name)
+    try:
+        if (name_input.input_value() or "").strip() != batch_name.strip():
+            name_input.press("Control+a")
+            name_input.press_sequentially(batch_name, delay=25)
+    except Exception:
+        pass
+    _dispatch_field_events(name_input)
+    try:
+        name_input.press("Tab")
+    except Exception:
+        pass
+
+    desc = page.get_by_role("textbox", name="Cart description").first
+    if desc.count() > 0:
+        try:
+            if desc.is_visible():
+                desc.click()
+                desc.fill(_SAVED_CART_DESC)
+                _dispatch_field_events(desc)
+                desc.press("Tab")
+        except Exception:
+            pass
+
+    save_visible = _visible_wishlist_save_button(page)
+    if save_visible is not None:
+        save_visible.wait_for(state="visible", timeout=5000)
+
+    _click_wishlist_save(
+        page,
+        batch_name=batch_name,
+        name_input=name_input,
+        timeout_ms=timeout_ms,
+    )
 
 
 def collect_failed_orderlines(page: Page) -> dict[str, str]:
@@ -221,26 +410,18 @@ def webshop_orchestration(
 
     #  _create_saved_cart — name from order_level column K (saved_card_name) or cart_DDYY_NNNN
     batch_name = (saved_cart_name or "").strip() or resolve_saved_cart_name(order)
+    if not batch_name.strip():
+        raise ValueError("saved cart name is empty (column K / saved_card_name)")
+
+    open_msg = "Opening Saved carts panel"
+    logger.info(open_msg)
+    on_phase and on_phase("PROCESSING", open_msg)
+    _open_saved_carts_panel(page, timeout_ms=min(nav_timeout, 30_000))
 
     msg = f"Creating new cart: {batch_name}"
-    logger.info(msg); on_phase and on_phase("PROCESSING", msg)
-    time.sleep(2.0)
-
-    try:
-        cart_icon = page.locator('button.wishlist-toggle:visible, button.right-off-canvas-toggle[title*="Saved carts"]:visible').first
-        cart_icon.wait_for(state="visible", timeout=5000)
-        cart_icon.click(force=True)
-        time.sleep(2.0)
-    except Exception:
-        pass
-
-    page.get_by_role("button", name="Create new cart").first.click()
-    name_input = page.get_by_role("textbox", name="Cart name").first
-    name_input.wait_for(state="visible", timeout=5000)
-    name_input.click()
-    name_input.fill(batch_name)
-
-    page.get_by_role("button", name="Save", exact=True).first.click()
+    logger.info(msg)
+    on_phase and on_phase("PROCESSING", msg)
+    _fill_and_save_new_cart(page, batch_name)
 
     if on_batch_name:
         try:

@@ -222,7 +222,8 @@ def bootstrap_login(timeout_min: int = 5) -> int:
             pass
 
         logger.info(
-            "Active session ready. You can close this Chrome window, then run:\n"
+            "Active session ready. Leave this Chrome window open for CDP tools, then:\n"
+            "  python codegen_session.py     (Playwright Inspector on this session)\n"
             "  python main.py --unattended\n"
         )
         # Disconnect Playwright only — Chrome stays signed in.

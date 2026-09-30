@@ -16,7 +16,12 @@ from gspread.utils import rowcol_to_a1
 
 from config_loader import accept_legacy_main_row, bot_pickup_phase, load_config, pipeline_valid_active_phase
 from logging_setup import get_logger
-from webshop.config import COLUMN_ALIASES, ORDER_PHASE, WEBSHOP_ITEM_STATUS_OK
+from webshop.config import (
+    COLUMN_ALIASES,
+    ITEM_STATUS_VALID,
+    ORDER_PHASE,
+    WEBSHOP_ITEM_STATUS_OK,
+)
 
 logger = get_logger()
 
@@ -683,38 +688,23 @@ def _download_drive_file(
     return target
 
 
-def load_order_items_dataframe(
-    items_sheet: gspread.Worksheet,
-    order_id: str,
-    config=None,
-) -> pd.DataFrame:
-    """
-    Load item_number / item_qty from item_level for one order_id.
-    Returns columns Item number, Order amount (webshop batch format).
-    """
-    order_id = (order_id or "").strip()
-    if not order_id:
-        raise ValueError("order_id is required to load item_level rows.")
-
+def _item_level_dataframe(items_sheet: gspread.Worksheet) -> pd.DataFrame:
     values = items_sheet.get_all_values()
     if not values or len(values) < 2:
         raise LookupError("item_level sheet is empty.")
-
     headers = values[0]
-    df = pd.DataFrame(values[1:], columns=[str(h).strip().lower() for h in headers])
+    return pd.DataFrame(values[1:], columns=[str(h).strip().lower() for h in headers])
 
+
+def _order_id_column(df: pd.DataFrame) -> str:
     if "order_id" in df.columns:
-        id_col = "order_id"
-    elif "email_id" in df.columns:
-        id_col = "email_id"
-    else:
-        raise KeyError("item_level has no order_id column.")
+        return "order_id"
+    if "email_id" in df.columns:
+        return "email_id"
+    raise KeyError("item_level has no order_id column.")
 
-    mask = df[id_col].astype(str).str.strip() == order_id
-    subset = df.loc[mask].copy()
-    if subset.empty:
-        raise LookupError(f"No item_level rows for order_id={order_id!r}.")
 
+def _resolve_item_columns(subset: pd.DataFrame, all_columns: list[str]) -> tuple[str, str]:
     def _col(name: str, aliases: list[str]) -> str:
         if name in subset.columns:
             return name
@@ -722,26 +712,122 @@ def load_order_items_dataframe(
             if alt in subset.columns:
                 return alt
         raise KeyError(
-            f"item_level missing {name!r} (tried {aliases}); headers={list(df.columns)!r}."
+            f"item_level missing {name!r} (tried {aliases}); headers={all_columns!r}."
         )
 
-    item_col = _col("item_number", ["item_name"])
-    qty_col = _col("item_qty", ["item_count"])
+    return _col("item_number", ["item_name"]), _col("item_qty", ["item_count"])
 
-    items = pd.DataFrame(
-        {
-            "Item number": subset[item_col].astype(str).str.strip(),
-            "Order amount": subset[qty_col].astype(str).str.strip(),
-        }
+
+def _row_is_valid_item(
+    subset: pd.DataFrame,
+    index: int,
+    *,
+    item_col: str,
+    qty_col: str,
+    status_col: str | None,
+) -> bool:
+    row = subset.iloc[index]
+    item_number = str(row[item_col]).strip()
+    item_qty = str(row[qty_col]).strip()
+    if not item_number or not item_qty:
+        return False
+    if status_col is None:
+        return True
+    status = str(row[status_col]).strip().lower()
+    return status == ITEM_STATUS_VALID
+
+
+def count_valid_items_for_order(
+    items_sheet: gspread.Worksheet,
+    order_id: str,
+    config=None,
+) -> tuple[int, int]:
+    """
+    Count item_level rows for order_id with item_status=valid and non-empty item/qty.
+    Returns (valid_count, total_rows_for_order).
+    """
+    _ = config
+    order_id = (order_id or "").strip()
+    if not order_id:
+        raise ValueError("order_id is required to check item_level.")
+
+    df = _item_level_dataframe(items_sheet)
+    id_col = _order_id_column(df)
+    subset = df.loc[df[id_col].astype(str).str.strip() == order_id].copy()
+    total = len(subset)
+    if total == 0:
+        return 0, 0
+
+    item_col, qty_col = _resolve_item_columns(subset, list(df.columns))
+    status_col = "item_status" if "item_status" in subset.columns else None
+    valid = sum(
+        1
+        for i in range(total)
+        if _row_is_valid_item(
+            subset, i, item_col=item_col, qty_col=qty_col, status_col=status_col
+        )
     )
-    items = items[(items["Item number"] != "") & (items["Order amount"] != "")]
+    return valid, total
+
+
+def valid_items_error_reason(order_id: str, valid_count: int, total_rows: int) -> str:
+    if total_rows == 0:
+        return f"No item_level rows for order_id={order_id!r}"
+    if valid_count == 0:
+        return (
+            f"No valid items on item_level for order_id={order_id!r} "
+            f"(0 of {total_rows} row(s) with item_status={ITEM_STATUS_VALID!r} "
+            f"and non-empty item_number/item_qty)"
+        )
+    return ""
+
+
+def load_order_items_dataframe(
+    items_sheet: gspread.Worksheet,
+    order_id: str,
+    config=None,
+) -> pd.DataFrame:
+    """
+    Load item_number / item_qty from item_level for one order_id.
+    Only rows with item_status=valid (when column exists) are included.
+    Returns columns Item number, Order amount (webshop batch format).
+    """
+    order_id = (order_id or "").strip()
+    if not order_id:
+        raise ValueError("order_id is required to load item_level rows.")
+
+    df = _item_level_dataframe(items_sheet)
+    id_col = _order_id_column(df)
+    subset = df.loc[df[id_col].astype(str).str.strip() == order_id].copy()
+    if subset.empty:
+        raise LookupError(f"No item_level rows for order_id={order_id!r}.")
+
+    item_col, qty_col = _resolve_item_columns(subset, list(df.columns))
+    status_col = "item_status" if "item_status" in subset.columns else None
+
+    rows: list[dict[str, str]] = []
+    for i in range(len(subset)):
+        if not _row_is_valid_item(
+            subset, i, item_col=item_col, qty_col=qty_col, status_col=status_col
+        ):
+            continue
+        row = subset.iloc[i]
+        rows.append(
+            {
+                "Item number": str(row[item_col]).strip(),
+                "Order amount": str(row[qty_col]).strip(),
+            }
+        )
+
+    items = pd.DataFrame(rows)
     if items.empty:
         raise ValueError(
-            f"item_level rows for order_id={order_id!r} have no item_number/item_qty."
+            f"item_level has no valid upload rows for order_id={order_id!r} "
+            f"(need item_status={ITEM_STATUS_VALID!r})."
         )
 
     logger.info(
-        "Loaded %s item_level row(s) for order_id=%s.",
+        "Loaded %s valid item_level row(s) for order_id=%s.",
         len(items),
         order_id,
     )

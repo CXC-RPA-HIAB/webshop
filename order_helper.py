@@ -14,10 +14,12 @@ from csv_utils import prepare_batch_payload_from_dataframe
 from logging_setup import get_logger
 
 from spreadsheet_processing import (
+    count_valid_items_for_order,
     find_pending_orders,
     load_order_items_dataframe,
     set_batch_name,
     set_webshop_item_status,
+    valid_items_error_reason,
 )
 from webshop.sheet_writer import (
     claim_order_for_bot,
@@ -87,6 +89,30 @@ def process_single_order(
         if not order.email_id:
             raise ValueError("order_id is empty on processing row; cannot safely edit phases.")
 
+        if not order.client_number:
+            raise ValueError("client_number is empty on processing row.")
+
+        items_sheet = open_items_sheet(sheet, config)
+        valid_count, total_rows = count_valid_items_for_order(
+            items_sheet, email_id, config
+        )
+        skip_reason = valid_items_error_reason(email_id, valid_count, total_rows)
+        if skip_reason:
+            logger.warning(
+                "Skipping order_id=%s row=%s: %s",
+                email_id,
+                row_number,
+                skip_reason,
+            )
+            order["row_number"] = mark_bot_error(
+                sheet,
+                order_id=order.email_id,
+                reason=skip_reason,
+                row_number=order.row_number,
+                config=config,
+            )
+            return False
+
         order["row_number"] = claim_order_for_bot(
             sheet,
             order_id=order.email_id,
@@ -101,10 +127,6 @@ def process_single_order(
             config=config,
         )
 
-        if not order.client_number:
-            raise ValueError("client_number is empty on processing row.")
-
-        items_sheet = open_items_sheet(sheet, config)
         order["row_number"] = set_bot_active_progress(
             sheet,
             order_id=order.email_id,

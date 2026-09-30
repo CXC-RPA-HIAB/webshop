@@ -1,29 +1,20 @@
-// MAIN column indexes (0-based) — must match sheet headers A–P:
-// email_id, client_mail, client_number, client_name, attachment_name, attachments_path,
-// active_phase, manual_phase, robot_phase, email_feedback, timestamp_email_receive,
-// timestamp_processed_at, email_title, customer_email, internal_email, batch_name
-const MAIN_COL = {
-  EMAIL_ID: 0,
-  CLIENT_MAIL: 1,
-  CUSTOMER_NUMBER: 2,
-  CUSTOMER_NAME: 3,
-  ATTACHMENT_NAME: 4,
-  ATTACHMENTS_PATH: 5,
-  ACTIVE_PHASE: 6,
-  MANUAL_PHASE: 7,
-  ROBOT_PHASE: 8,
-  EMAIL_FEEDBACK: 9,
-  TIMESTAMP_EMAIL_RECEIVE: 10,
-  TIMESTAMP_PROCESSED_AT: 11,
-  EMAIL_TITLE: 12,
-  CUSTOMER_EMAIL: 13,
-  INTERNAL_EMAIL: 14,
-  BATCH_NAME: 15
+// order_level column indexes (0-based) — must match CONFIG.ORDER_HEADERS
+const ORDER_COL = {
+  ORDER_ID: 0,
+  PHASE: 1,
+  ACTIVE_PHASE: 2,
+  EMAIL_RESPONSE: 3,
+  CUSTOMER_NAME: 4,
+  CUSTOMER_NUMBER: 5,
+  CUSTOMER_EMAIL: 6,
+  ORDER_CSV: 7,
+  TIMESTAMP_ORDER_RECEIVE: 8,
+  TIMESTAMP_BOT_DONE: 9,
+  SAVED_CARD_NAME: 10,
+  INTERNAL_EMAIL: 11
 };
 
-
-
-const EMAIL_FEEDBACK_COLUMN = 10;
+const EMAIL_FEEDBACK_COLUMN = 4;
 
 
 
@@ -79,16 +70,14 @@ function internalSenderName(message) {
 
 function customerNameFromRow(row) {
 
-  const name = String(row[MAIN_COL.CUSTOMER_NAME] || "").trim();
+  const name = String(row[ORDER_COL.CUSTOMER_NAME] || "").trim();
 
   return (name && name !== "N/A") ? name : "Customer";
 
 }
 
 function internalEmailFromRow(row) {
-  const dedicated = EmailNotifier.normalizeEmailAddress(row[MAIN_COL.INTERNAL_EMAIL]);
-  if (dedicated) return dedicated;
-  return EmailNotifier.normalizeEmailAddress(row[MAIN_COL.CLIENT_MAIL]);
+  return EmailNotifier.normalizeEmailAddress(row[ORDER_COL.INTERNAL_EMAIL]);
 }
 
 function isLikelyGmailMessageId(emailId) {
@@ -98,40 +87,31 @@ function isLikelyGmailMessageId(emailId) {
 
 
 
-function robotFailureReason(robotPhase) {
+function robotFailureReason(orderPhase, activePhase) {
+  const phase = String(orderPhase || "").trim();
+  if (phase !== CONFIG.ORDER_PHASE.ERROR) return null;
+  const active = String(activePhase || "").trim();
+  if (active.indexOf(CONFIG.PHASES.ERROR) === 0) {
+    return active.split(" - ").slice(1).join(" - ") || "Unknown robot error";
+  }
+  return active || "Unknown robot error";
+}
 
-  const phase = String(robotPhase || "").trim();
-
-  if (phase.indexOf("ERROR") !== 0) return null;
-
-  return phase.split(" - ").slice(1).join(" - ") || "Unknown robot error";
-
+function isRobotFinished(orderPhase) {
+  return String(orderPhase || "").trim() === CONFIG.ORDER_PHASE.DONE;
 }
 
 
 
-function isRobotFinished(robotPhase) {
-
-  const phase = String(robotPhase || "").trim();
-
-  return phase === "FINISHED" || phase.indexOf("FINISHED") === 0;
-
-}
-
-
-
-function appsScriptErrorPhase(manualPhase, legacyActivePhase) {
-
-  const manual = String(manualPhase || "").trim();
-
-  if (manual.indexOf(CONFIG.PHASES.ERROR) === 0) return manual;
-
-  const legacy = String(legacyActivePhase || "").trim();
-
-  if (legacy.indexOf(CONFIG.PHASES.ERROR) === 0) return legacy;
-
+function appsScriptErrorPhase(orderPhase, activePhase) {
+  const phase = String(orderPhase || "").trim();
+  if (phase === CONFIG.ORDER_PHASE.ERROR) {
+    const active = String(activePhase || "").trim();
+    return active.indexOf(CONFIG.PHASES.ERROR) === 0 ? active : phase;
+  }
+  const active = String(activePhase || "").trim();
+  if (active.indexOf(CONFIG.PHASES.ERROR) === 0) return active;
   return "";
-
 }
 
 
@@ -184,21 +164,14 @@ function processFeedbackEmails() {
 
 
 
-    if (String(row[MAIN_COL.EMAIL_FEEDBACK]).trim() !== CONFIG.FEEDBACK_STATES.PENDING) continue;
+    if (String(row[ORDER_COL.EMAIL_RESPONSE]).trim() !== CONFIG.FEEDBACK_STATES.PENDING) continue;
 
+    const phase = String(row[ORDER_COL.PHASE] || "").trim();
+    const activePhase = String(row[ORDER_COL.ACTIVE_PHASE] || "").trim();
 
-
-    const manualPhase = String(row[MAIN_COL.MANUAL_PHASE] || "").trim();
-
-    const robotPhase = String(row[MAIN_COL.ROBOT_PHASE] || "").trim();
-
-    const legacyActivePhase = String(row[MAIN_COL.ACTIVE_PHASE] || "").trim();
-
-    const errorPhase = appsScriptErrorPhase(manualPhase, legacyActivePhase);
-
-    const robotFailure = robotFailureReason(robotPhase);
-
-    const robotDone = isRobotFinished(robotPhase);
+    const errorPhase = appsScriptErrorPhase(phase, activePhase);
+    const robotFailure = robotFailureReason(phase, activePhase);
+    const robotDone = isRobotFinished(phase);
 
 
 
@@ -206,9 +179,9 @@ function processFeedbackEmails() {
 
 
 
-    const emailId = String(row[MAIN_COL.EMAIL_ID] || "").trim();
+    const emailId = String(row[ORDER_COL.ORDER_ID] || "").trim();
 
-    const customerEmail = EmailNotifier.normalizeEmailAddress(row[MAIN_COL.CUSTOMER_EMAIL]);
+    const customerEmail = EmailNotifier.normalizeEmailAddress(row[ORDER_COL.CUSTOMER_EMAIL]);
 
     if (!isLikelyGmailMessageId(emailId)) {
       Logger.log(`Row ${rowIdx}: invalid or missing email_id "${emailId}" — feedback skipped.`);
@@ -237,11 +210,11 @@ function processFeedbackEmails() {
 
         customerName: customerNameFromRow(row),
 
-        customerNumber: String(row[MAIN_COL.CUSTOMER_NUMBER] || "").trim(),
+        customerNumber: String(row[ORDER_COL.CUSTOMER_NUMBER] || "").trim(),
 
         customerEmail: customerEmail,
 
-        attachmentName: row[MAIN_COL.ATTACHMENT_NAME],
+        attachmentName: row[ORDER_COL.SAVED_CARD_NAME],
 
         report: report
 
@@ -333,7 +306,7 @@ function processFeedbackEmails() {
           variant: EmailNotifier.VARIANTS.CART_COMPLETED,
           errorMessage: "",
           report: report,
-          savedCartName: String(row[MAIN_COL.BATCH_NAME] || "").trim()
+          savedCartName: String(row[ORDER_COL.SAVED_CARD_NAME] || "").trim()
         });
       } catch (internalError) {
         Logger.log(`Row ${rowIdx}: internal feedback failed: ${internalError.message}`);
@@ -348,7 +321,7 @@ function processFeedbackEmails() {
             customerEmail: customerEmail,
             customerName: baseInfo.customerName,
             internalEmail: internalEmailFromRow(row),
-            savedCartName: String(row[MAIN_COL.BATCH_NAME] || "").trim(),
+            savedCartName: String(row[ORDER_COL.SAVED_CARD_NAME] || "").trim(),
             buckets: ItemsReport.customerBuckets(report),
             processedItems: report.processed
           });

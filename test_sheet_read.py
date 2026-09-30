@@ -29,16 +29,19 @@ def test_spreadsheet_read():
     
     # Attempt to rename columns exactly as in our business logic
     df = df.rename(columns={
+        "CUSTOMER_NUMBER": "client_number",
+        "CUSTOMER_NAME": "client_name",
+        "ORDER_ID": "email_id",
+        "ORDER_CSV": "attachments_path",
+        "PHASE": "manual_phase",
+        "ACTIVE_PHASE": "active_phase",
+        "SAVED_CARD_NAME": "batch_name",
         "CLIENT_NUMBER": "client_number",
         "CLIENT_NAME": "client_name",
         "EMAIL_ID": "email_id",
-        "MAIL": "client_mail",
         "ATTACHMENTS_PATH": "attachments_path",
         "MANUAL_PHASE": "manual_phase",
         "ROBOT_PHASE": "robot_phase",
-        "EMAIL_TITLE": "email_title",
-        "BATCH_NAME": "batch_name",
-        "ACTIVE_PHASE": "active_phase"
     })
     
     print("\n--- 2. PANDAS DATAFRAME COLUMNS AFTER RENAMING ---")

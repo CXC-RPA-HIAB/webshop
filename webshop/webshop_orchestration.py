@@ -5,7 +5,6 @@ Fully minimized procedural approach using a single pipeline function without nes
 
 from __future__ import annotations
 
-import datetime
 import time
 from pathlib import Path
 from typing import Callable, List, Optional, Sequence
@@ -18,6 +17,7 @@ from logging_setup import get_logger
 # Ensure these imports match your project structure
 from playwright.sync_api import BrowserContext, Page
 from webshop import login_handler
+from webshop.cart_naming import resolve_saved_cart_name
 
 import pandas as pd
 logger = get_logger()
@@ -68,6 +68,7 @@ def webshop_orchestration(
     on_phase: Optional[PhaseCallback] = None,
     on_batch_name: Optional[Callable[[str], None]] = None,
     require_existing_session: bool = False,
+    saved_cart_name: Optional[str] = None,
 ) -> dict[str, str]:
     """
     Executes the entire webshop batch order process in a single procedural flow.
@@ -218,9 +219,8 @@ def webshop_orchestration(
     if not impersonated:
         raise TimeoutError(f"No impersonator option matched client_number={client_number}")
 
-    #  _create_saved_cart
-    email_prefix = (client_mail or "").strip()[:33]
-    batch_name = f"{datetime.datetime.now().strftime('%d%m%y_%H%M')}_{email_prefix}"
+    #  _create_saved_cart — name from order_level column K (saved_card_name) or cart_DDYY_NNNN
+    batch_name = (saved_cart_name or "").strip() or resolve_saved_cart_name(order)
 
     msg = f"Creating new cart: {batch_name}"
     logger.info(msg); on_phase and on_phase("PROCESSING", msg)

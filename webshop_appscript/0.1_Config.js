@@ -26,10 +26,33 @@ const CONFIG = {
   },
   
   SHEETS: {
-    MAIN: "MAIN",
-    ITEMS: "ITEMS",
+    MAIN: "order_level",
+    ITEMS: "item_level",
     PHASES: "PHASES"
   },
+
+  ORDER_HEADERS: [
+    "order_id",
+    "phase",
+    "active_phase",
+    "email_response",
+    "customer_name",
+    "customer_number",
+    "customer_email",
+    "order_csv",
+    "timestamp_order_receive",
+    "timestamp_bot_done",
+    "saved_card_name",
+    "internal_email"
+  ],
+
+  ITEM_HEADERS: [
+    "order_id",
+    "item_number",
+    "item_qty",
+    "item_status",
+    "item_match_type"
+  ],
   
 PHASES: {
     RECEIVED: "1_EMAIL_RECEIVED",
@@ -41,8 +64,15 @@ PHASES: {
   },
 
 
+  ORDER_PHASE: {
+    IN_PROGRESS: "IN PROGRESS",
+    READY: "READY",
+    DONE: "DONE",
+    ERROR: "ERROR"
+  },
+
   MANUAL_STATES: {
-    PROCESSING: "PROCESSING",
+    PROCESSING: "IN PROGRESS",
     ERROR: "ERROR",
     VALID: "VALID"
   },

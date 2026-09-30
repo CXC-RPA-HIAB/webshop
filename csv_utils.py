@@ -24,24 +24,58 @@ class BatchPayload:
         return len(self.batch_files)
 
 
-def prepare_batch_payload(source_csv, output_dir, stem, batch_size: int = DEFAULT_BATCH_MAX_ROWS) -> BatchPayload:
-    """
-    Extract columns A/B, build item/quantity dataframe, split into batch_size csvs (max 100 rows).
-    """
-    out_dir = Path(output_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+def _normalize_items_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """Webshop Batch Order columns: Item number, Order amount."""
+    required = {"Item number", "Order amount"}
+    if required.issubset(df.columns):
+        out = df[list(required)].copy()
+    else:
+        raise ValueError(
+            f"Items dataframe must have columns {required!r}, got {list(df.columns)!r}."
+        )
+    out["Item number"] = out["Item number"].astype(str).str.strip()
+    out["Order amount"] = out["Order amount"].astype(str).str.strip()
+    out = out[(out["Item number"] != "") & (out["Order amount"] != "")]
+    out = out.dropna(how="all")
+    if out.empty:
+        raise ValueError("No item rows after normalization.")
+    return out.reset_index(drop=True)
 
-    df = pd.read_csv(source_csv, usecols=[0, 1], dtype=str).dropna(how="all")
-    df.columns = ["Item number", "Order amount"]
-    
-    batch_files = []
 
-    # cut dataframe into chunks of batch_size
+def _write_batch_files(
+    df: pd.DataFrame, out_dir: Path, stem: str, batch_size: int
+) -> list[Path]:
+    batch_files: list[Path] = []
     for i in range(0, len(df), batch_size):
         chunk = df.iloc[i : i + batch_size]
-        target = out_dir / f"{stem}_batch_{i//batch_size + 1}.csv"
+        target = out_dir / f"{stem}_batch_{i // batch_size + 1}.csv"
         chunk.to_csv(target, index=False)
         batch_files.append(target)
         logger.info("Wrote batch file %s (%s rows).", target.name, len(chunk))
+    return batch_files
 
-    return BatchPayload(items=df, batch_files=batch_files, total_rows=len(df), batch_size=batch_size)
+
+def prepare_batch_payload_from_dataframe(
+    items: pd.DataFrame,
+    output_dir,
+    stem: str,
+    batch_size: int = DEFAULT_BATCH_MAX_ROWS,
+) -> BatchPayload:
+    """Split item/qty dataframe into on-disk batch CSVs for Batch Order upload."""
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    df = _normalize_items_dataframe(items)
+    batch_files = _write_batch_files(df, out_dir, stem, batch_size)
+    return BatchPayload(
+        items=df, batch_files=batch_files, total_rows=len(df), batch_size=batch_size
+    )
+
+
+def prepare_batch_payload(source_csv, output_dir, stem, batch_size: int = DEFAULT_BATCH_MAX_ROWS) -> BatchPayload:
+    """
+    Read local CSV (columns A/B), build batches (legacy path).
+    Prefer prepare_batch_payload_from_dataframe with item_level data.
+    """
+    raw = pd.read_csv(source_csv, usecols=[0, 1], dtype=str).dropna(how="all")
+    raw.columns = ["Item number", "Order amount"]
+    return prepare_batch_payload_from_dataframe(raw, output_dir, stem, batch_size)

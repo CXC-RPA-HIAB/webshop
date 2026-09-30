@@ -1,19 +1,6 @@
 const ItemsSheetWriter = {
-  // ITEMS layout: A EMAIL_ID, B CUSTOMER_NAME, C CUSTOMER_NUMBER,
-  // D ATTACHMENT_NAME, E ITEM_NAME, F ITEM_COUNT, G ITEM_STATUS, H MATCH_TYPE,
-  // I WEBSHOP_ITEM_STATUS (written by the Python robot, never by this script)
-  HEADERS: [
-    "EMAIL_ID",
-    "CUSTOMER_NAME",
-    "CUSTOMER_NUMBER",
-    "ATTACHMENT_NAME",
-    "ITEM_NAME",
-    "ITEM_COUNT",
-    "ITEM_STATUS",
-    "MATCH_TYPE",
-    "WEBSHOP_ITEM_STATUS"
-  ],
-  LAST_COLUMN: 9,
+  HEADERS: CONFIG.ITEM_HEADERS,
+  LAST_COLUMN: CONFIG.ITEM_HEADERS.length,
 
   ensureColumns: function(itemsSheet) {
     const maxColumns = itemsSheet.getMaxColumns();
@@ -45,11 +32,22 @@ const ItemsSheetWriter = {
     const headers = itemsSheet.getRange(1, 1, 1, lastColumn).getValues()[0];
     const indexes = {};
 
+    const alias = {
+      EMAILID: "ORDERID",
+      ITEMNAME: "ITEMNUMBER",
+      ITEMCOUNT: "ITEMQTY",
+      MATCHTYPE: "ITEMMATCHTYPE"
+    };
+
     for (let c = 0; c < headers.length; c++) {
       const raw = String(headers[c] || "").trim();
       if (!raw) continue;
       indexes[raw] = c;
-      indexes[this.normalizeHeader(raw)] = c;
+      const norm = this.normalizeHeader(raw);
+      indexes[norm] = c;
+      if (alias[norm]) {
+        indexes[alias[norm]] = c;
+      }
     }
 
     return indexes;
@@ -60,16 +58,12 @@ const ItemsSheetWriter = {
     const indexes = this.headerIndexes(itemsSheet);
     const rowValues = itemsSheet.getRange(rowIndex, 1, 1, lastColumn).getValues()[0];
 
-    const itemNameIdx = indexes.ITEM_NAME;
-    const customerNumberIdx = indexes.CUSTOMER_NUMBER;
+    const itemNumberIdx = indexes.ITEM_NUMBER !== undefined ? indexes.ITEM_NUMBER : indexes.ITEMNAME;
     const itemStatusIdx = indexes.ITEM_STATUS;
-    const matchTypeIdx = indexes.MATCH_TYPE;
+    const matchTypeIdx = indexes.ITEM_MATCH_TYPE !== undefined ? indexes.ITEM_MATCH_TYPE : indexes.ITEMMATCHTYPE;
 
-    if (itemNameIdx !== undefined) {
-      rowValues[itemNameIdx] = item.resolvedItemName || item.ITEM_NAME || "";
-    }
-    if (customerNumberIdx !== undefined) {
-      rowValues[customerNumberIdx] = item.resolvedCustomerNumber || item.CUSTOMER_NUMBER || "";
+    if (itemNumberIdx !== undefined) {
+      rowValues[itemNumberIdx] = item.resolvedItemName || item.ITEM_NAME || "";
     }
     if (itemStatusIdx !== undefined) {
       rowValues[itemStatusIdx] = item.itemStatus || "";

@@ -3,16 +3,16 @@ Webshop — entry point.
 
 process_emails():
   1. Google Sheets init
-  2. Find MAIN rows: MANUAL_PHASE=PROCESSING & ROBOT_PHASE empty & ACTIVE_PHASE (COL G)=5_VALID
+  2. Find order_level rows: phase=READY
   3. Extract client data + prepare A/B CSV batches (max 100 rows each)
   4. Playwright: login, impersonate, batch upload loop, add to cart
-  5. Update ROBOT_PHASE (PROCESSING / ERROR / FINISHED);
-     on FINISHED set MANUAL_PHASE=FINISHED; on ERROR set MANUAL_PHASE=ERROR
+  5. Claim READY → IN PROGRESS; progress only in active_phase;
+     on success phase=DONE + timestamp_bot_done; on failure phase=ERROR
 
 run_unattended():
-  Background loop — Chrome runs hidden (logs only), polls MAIN every N
-  seconds (default 60), processes when MANUAL_PHASE=PROCESSING,
-  ROBOT_PHASE empty, and ACTIVE_PHASE=5_VALID. Reuses the signed-in bot
+  Background loop — Chrome runs hidden (logs only), polls order_level every N
+  seconds (default 60), processes when phase=READY.
+  Reuses the signed-in bot
   profile. If session is dead, run: python main.py --login
 """
 
@@ -75,8 +75,8 @@ def run_unattended(max_orders: Optional[int] = None) -> int:
     Background unattended loop with a long-lived signed-in Chrome session.
 
     Runs Chrome hidden (headless) — only logs are visible. Reuses the signed-in
-    bot profile from --login (no password/MFA re-login). Polls MAIN for rows
-    with MANUAL_PHASE=PROCESSING, ROBOT_PHASE empty, and ACTIVE_PHASE=5_VALID.
+    bot profile from --login (no password/MFA re-login). Polls order_level for rows
+    with phase=READY.
     If the session is not active, stop and run: python main.py --login
     """
     config = load_config()
@@ -91,8 +91,7 @@ def run_unattended(max_orders: Optional[int] = None) -> int:
     logger.info("======= Webshop v%s — UNATTENDED =======", VERSION)
     logger.info(
         "Hidden Chrome session (CDP %s, headless=%s). "
-        "Polling every %ss for MANUAL_PHASE=PROCESSING & ROBOT_PHASE empty "
-        "& ACTIVE_PHASE=5_VALID. Only logs are shown.",
+        "Polling every %ss for phase=READY. Only logs are shown.",
         cdp_port,
         force_headless,
         poll_sec,

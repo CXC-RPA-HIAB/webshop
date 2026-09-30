@@ -1,66 +1,92 @@
 const SheetHelper = {
+  ORDER_COL: {
+    ORDER_ID: 1,
+    PHASE: 2,
+    ACTIVE_PHASE: 3,
+    EMAIL_RESPONSE: 4,
+    ORDER_CSV: 8
+  },
+
+  ensureOrderHeaders: function(mainSheet) {
+    const lastColumn = CONFIG.ORDER_HEADERS.length;
+    const maxColumns = mainSheet.getMaxColumns();
+    if (maxColumns < lastColumn) {
+      mainSheet.insertColumnsAfter(maxColumns, lastColumn - maxColumns);
+    }
+    const headerRow = mainSheet.getRange(1, 1, 1, lastColumn).getValues()[0];
+    let headersChanged = false;
+    for (let c = 0; c < CONFIG.ORDER_HEADERS.length; c++) {
+      if (String(headerRow[c] || "").trim() !== CONFIG.ORDER_HEADERS[c]) {
+        headerRow[c] = CONFIG.ORDER_HEADERS[c];
+        headersChanged = true;
+      }
+    }
+    if (headersChanged) {
+      mainSheet.getRange(1, 1, 1, lastColumn).setValues([headerRow]);
+    }
+  },
+
   appendInitialRow: function(mainRecord) {
     const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
     const mainSheet = ss.getSheetByName(CONFIG.SHEETS.MAIN);
-    
+    this.ensureOrderHeaders(mainSheet);
+
     mainSheet.insertRowAfter(1);
-    
-    // MAIN A–P (16 columns)
+
+    const orderId = mainRecord.order_id || mainRecord.EMAIL_ID || "";
     const rowData = [
-      mainRecord.EMAIL_ID,
-      mainRecord.EMAIL,
-      mainRecord.CLIENT_ID,
-      mainRecord.CLIENT,
-      mainRecord.ATTACHMENT_NAME,
-      mainRecord.ATTACHMENT_PATH,
-      mainRecord.ACTIVE_PHASE,
-      mainRecord.MANUAL_PHASE,
-      mainRecord.ROBOT_PHASE,
-      mainRecord.EMAIL_FEEDBACK,
-      mainRecord.TIMESTAMP_EMAIL_RECEIVE,
-      mainRecord.TIMESTAMP_PROCESSED_AT,
-      mainRecord.TITLE,
-      mainRecord.CUSTOMER_EMAIL,
-      mainRecord.INTERNAL_EMAIL || "",
-      mainRecord.BATCH_NAME || ""
+      orderId,
+      mainRecord.phase || mainRecord.MANUAL_PHASE || "",
+      mainRecord.active_phase || mainRecord.ACTIVE_PHASE || "",
+      mainRecord.email_response || mainRecord.EMAIL_FEEDBACK || "NO",
+      mainRecord.customer_name || mainRecord.CLIENT || "",
+      mainRecord.customer_number || mainRecord.CLIENT_ID || "",
+      mainRecord.customer_email || mainRecord.CUSTOMER_EMAIL || "",
+      mainRecord.order_csv || mainRecord.ATTACHMENT_PATH || "",
+      mainRecord.timestamp_order_receive || mainRecord.TIMESTAMP_EMAIL_RECEIVE || new Date(),
+      mainRecord.timestamp_bot_done || mainRecord.TIMESTAMP_PROCESSED_AT || "",
+      mainRecord.saved_card_name || mainRecord.TITLE || mainRecord.ATTACHMENT_NAME || "",
+      mainRecord.internal_email || mainRecord.INTERNAL_EMAIL || mainRecord.EMAIL || ""
     ];
-    
+
     mainSheet.getRange(2, 1, 1, rowData.length).setValues([rowData]);
     SpreadsheetApp.flush();
     return 2;
   },
 
-  updateStatus: function(rowIndex, activePhase, manualPhase,robotPhase = null) {
+  /**
+   * @param {number} rowIndex 1-based sheet row
+   * @param {string} activePhase pipeline step or bot state (column active_phase)
+   * @param {string} phase manual phase (column phase)
+   */
+  updateStatus: function(rowIndex, activePhase, phase) {
     const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
     const sheet = ss.getSheetByName(CONFIG.SHEETS.MAIN);
-    
-    // Column 7 (G) = ACTIVE_PHASE (always 5_VALID for the robot), Column 8 (H) = MANUAL_PHASE
+
     const activePhaseStr = String(activePhase);
-    let manualValue = manualPhase;
+    let phaseValue = phase;
     if (activePhaseStr.indexOf(CONFIG.PHASES.ERROR) === 0) {
-      manualValue = activePhaseStr;
+      phaseValue = activePhaseStr;
     }
-    sheet.getRange(rowIndex, 7).setValue(CONFIG.PHASES.VALID);
-    sheet.getRange(rowIndex, 8).setValue(manualValue);
-    if (robotPhase !== null && robotPhase !== undefined) {
-      sheet.getRange(rowIndex, 9).setValue(robotPhase);
-    }
-    
+    sheet.getRange(rowIndex, this.ORDER_COL.PHASE).setValue(phaseValue);
+    sheet.getRange(rowIndex, this.ORDER_COL.ACTIVE_PHASE).setValue(activePhaseStr);
+
     SpreadsheetApp.flush();
   },
 
   updateCell: function(rowIndex, colIndex, value) {
     const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
     const sheet = ss.getSheetByName(CONFIG.SHEETS.MAIN);
-    
+
     sheet.getRange(rowIndex, colIndex).setValue(value);
     SpreadsheetApp.flush();
   },
-updateSmartChip: function(rowIndex, colIndex, fileUrl) {
+
+  updateSmartChip: function(rowIndex, colIndex, fileUrl) {
     try {
       const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
       const sheetId = ss.getSheetByName(CONFIG.SHEETS.MAIN).getSheetId();
-      
+
       const request = {
         updateCells: {
           range: {
@@ -74,7 +100,7 @@ updateSmartChip: function(rowIndex, colIndex, fileUrl) {
             values: [{
               userEnteredValue: { stringValue: "@" },
               chipRuns: [{
-                startIndex: 0, 
+                startIndex: 0,
                 chip: {
                   richLinkProperties: {
                     uri: fileUrl
@@ -86,13 +112,9 @@ updateSmartChip: function(rowIndex, colIndex, fileUrl) {
           fields: "userEnteredValue,chipRuns"
         }
       };
-      
-      // Attempt to create the Smart Chip
-      Sheets.Spreadsheets.batchUpdate({ requests: [request] }, CONFIG.SPREADSHEET_ID);
-      
-    } catch (apiError) {
-      // FALLBACK: If the API throws the "No item with the given ID" error due to sync delays,
 
+      Sheets.Spreadsheets.batchUpdate({ requests: [request] }, CONFIG.SPREADSHEET_ID);
+    } catch (apiError) {
       const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
       const sheet = ss.getSheetByName(CONFIG.SHEETS.MAIN);
       sheet.getRange(rowIndex, colIndex).setFormula(`=HYPERLINK("${fileUrl}", "📄 View File")`);
@@ -102,32 +124,26 @@ updateSmartChip: function(rowIndex, colIndex, fileUrl) {
   writeToSheets: function(emailId, attachmentName, parsedItems) {
     const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
     const itemsSheet = ss.getSheetByName(CONFIG.SHEETS.ITEMS);
-    
+
     if (!itemsSheet) {
       throw new Error(`Could not find sheet named: ${CONFIG.SHEETS.ITEMS}`);
     }
 
     ItemsSheetWriter.ensureColumns(itemsSheet);
 
-    // A EMAIL_ID, B CUSTOMER_NAME, C CUSTOMER_NUMBER, D ATTACHMENT_NAME,
-    // E ITEM_NAME, F ITEM_COUNT, G ITEM_STATUS, H MATCH_TYPE
     const rowsToWrite = parsedItems.map(item => [
       emailId,
-      item.FULL_NAME || item.CUSTOMER_NAME || "",
-      item.CUSTOMER_NUMBER || "",
-      attachmentName,
       item.ITEM_NAME,
       item.ITEM_COUNT,
       CONFIG.ITEM_STATUS.QUEUED,
       ""
     ]);
-    
+
     itemsSheet.insertRowsAfter(1, rowsToWrite.length);
     itemsSheet.getRange(2, 1, rowsToWrite.length, rowsToWrite[0].length).setValues(rowsToWrite);
-    
+
     SpreadsheetApp.flush();
   },
-  
 
   ensureItemsColumns: function(itemsSheet) {
     return ItemsSheetWriter.ensureColumns(itemsSheet);
@@ -136,31 +152,26 @@ updateSmartChip: function(rowIndex, colIndex, fileUrl) {
   logErrorToMain: function(emailId, exactManualPhase, activePhaseWithError) {
     const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
     const mainSheet = ss.getSheetByName(CONFIG.SHEETS.MAIN);
-    
+    this.ensureOrderHeaders(mainSheet);
+
     mainSheet.insertRowAfter(1);
-    
+
     const rowData = [
       emailId,
-      "N/A",
-      "N/A",
-      "N/A",
-      "N/A",
-      "N/A",
-      CONFIG.PHASES.VALID,
+      activePhaseWithError || exactManualPhase,
       activePhaseWithError,
-      "",
       "NO",
-      new Date(),
-      new Date(),
+      "N/A",
+      "N/A",
       "",
+      "",
+      new Date(),
       "",
       "",
       ""
     ];
-    
-    const targetRange = mainSheet.getRange(2, 1, 1, rowData.length);
-    targetRange.setValues([rowData]);
-    
+
+    mainSheet.getRange(2, 1, 1, rowData.length).setValues([rowData]);
     SpreadsheetApp.flush();
   }
 };

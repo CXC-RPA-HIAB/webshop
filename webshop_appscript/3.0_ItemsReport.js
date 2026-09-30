@@ -1,5 +1,4 @@
-// aaSingle pass over the ITEMS sheet for one EMAIL_ID. Turns ITEM_STATUS, MATCH_TYPE
-// and WEBSHOP_ITEM_STATUS into the buckets shared by the internal and the customer mail.
+// Single pass over item_level for one order_id. Uses item_status (incl. webshop "exist").
 const ItemsReport = {
 
   replacedPrefix: function() {
@@ -76,12 +75,11 @@ const ItemsReport = {
 
     ItemsSheetWriter.ensureColumns(itemsSheet);
     const indexes = ItemsSheetWriter.headerIndexes(itemsSheet);
-    const emailIdIdx = indexes.EMAIL_ID;
-    const itemNameIdx = indexes.ITEM_NAME;
-    const itemStatusIdx = indexes.ITEM_STATUS;
-    const matchTypeIdx = indexes.MATCH_TYPE;
-    const webshopStatusIdx = indexes.WEBSHOP_ITEM_STATUS;
-    const itemCountIdx = indexes.ITEM_COUNT;
+    const emailIdIdx = indexes.order_id !== undefined ? indexes.order_id : indexes.ORDERID;
+    const itemNameIdx = indexes.item_number !== undefined ? indexes.item_number : indexes.ITEMNUMBER;
+    const itemStatusIdx = indexes.item_status !== undefined ? indexes.item_status : indexes.ITEMSTATUS;
+    const matchTypeIdx = indexes.item_match_type !== undefined ? indexes.item_match_type : indexes.ITEMMATCHTYPE;
+    const itemCountIdx = indexes.item_qty !== undefined ? indexes.item_qty : indexes.ITEMQTY;
 
     if (emailIdIdx === undefined || itemNameIdx === undefined || itemStatusIdx === undefined) {
       return report;
@@ -95,8 +93,6 @@ const ItemsReport = {
       const currentItem = String(itemsData[j][itemNameIdx] || "").trim();
       const status = String(itemsData[j][itemStatusIdx] || "").trim();
       const matchType = matchTypeIdx !== undefined ? String(itemsData[j][matchTypeIdx] || "").trim() : "";
-      const webshopStatus = webshopStatusIdx !== undefined ? String(itemsData[j][webshopStatusIdx] || "").trim() : "";
-
       report.total++;
 
       const replacement = this.parseReplacement(status);
@@ -121,9 +117,7 @@ const ItemsReport = {
       } else if (status === CONFIG.ITEM_STATUS.ANOTHER_PROBLEM) {
         report.anotherProblem.push(entry);
       } else if (status === CONFIG.ITEM_STATUS.PENDING_BQ || status === CONFIG.ITEM_STATUS.QUEUED || status === "") {
-        if (!webshopStatus) {
-          report.pending.push(entry);
-        }
+        report.pending.push(entry);
       } else if (this.isCleanReplacement(status)) {
         report.replaced.push({
           originalItem: originalItem,
@@ -152,11 +146,15 @@ const ItemsReport = {
         report.ready.push(entry);
       }
 
-      if (webshopStatus && webshopStatus !== CONFIG.WEBSHOP_ITEM_STATUS_OK) {
-        report.webshopRejected.push({ item: currentItem, originalItem: originalItem, status: webshopStatus });
+      if (status && status !== CONFIG.WEBSHOP_ITEM_STATUS_OK && status !== CONFIG.ITEM_STATUS.VALID &&
+          status !== CONFIG.ITEM_STATUS.QUEUED && status.indexOf(CONFIG.ITEM_STATUS.REPLACED) !== 0 &&
+          status !== CONFIG.ITEM_STATUS.NOT_IN_BQ && status !== CONFIG.ITEM_STATUS.BLOCKED &&
+          status !== CONFIG.ITEM_STATUS.NO_GLOBAL_PRICE && status !== CONFIG.ITEM_STATUS.OBSOLETE &&
+          status !== CONFIG.ITEM_STATUS.ANOTHER_PROBLEM && status !== CONFIG.ITEM_STATUS.PENDING_BQ) {
+        report.webshopRejected.push({ item: currentItem, originalItem: originalItem, status: status });
       }
 
-      if (webshopStatus === CONFIG.WEBSHOP_ITEM_STATUS_OK) {
+      if (status === CONFIG.WEBSHOP_ITEM_STATUS_OK) {
         let quantity = 1;
         if (itemCountIdx !== undefined) {
           const parsed = parseInt(itemsData[j][itemCountIdx], 10);

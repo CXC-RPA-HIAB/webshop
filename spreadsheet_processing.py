@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import re
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from urllib.parse import parse_qs, urlparse
@@ -14,8 +14,9 @@ import requests
 from gspread.exceptions import APIError
 from gspread.utils import rowcol_to_a1
 
-from config_loader import load_config
+from config_loader import accept_legacy_main_row, bot_pickup_phase, load_config, pipeline_valid_active_phase
 from logging_setup import get_logger
+from webshop.config import COLUMN_ALIASES, ORDER_PHASE, WEBSHOP_ITEM_STATUS_OK
 
 logger = get_logger()
 
@@ -45,14 +46,16 @@ def safe_update_cell(
             raise
 
 def _get_col_idx(headers: List[str], target_name: str, fallback_idx: int = -1) -> int:
-    """Simple helper to find 1-based column index natively."""
-    target = str(target_name).strip().lower()
+    """Find 1-based column index; supports legacy header names via COLUMN_ALIASES."""
     norm_headers = [str(h).strip().lower() for h in headers]
-    if target in norm_headers:
-        return norm_headers.index(target) + 1
+    candidates = [str(target_name).strip().lower()]
+    candidates.extend(COLUMN_ALIASES.get(candidates[0], []))
+    for name in candidates:
+        if name in norm_headers:
+            return norm_headers.index(name) + 1
     if fallback_idx > 0:
         return fallback_idx
-    raise KeyError(f"Column {target_name!r} not found in headers.")
+    raise KeyError(f"Column {target_name!r} not found in headers {headers!r}.")
 
 def find_row_by_email_id(
     sheet: gspread.Worksheet,
@@ -62,19 +65,18 @@ def find_row_by_email_id(
     known_row: Optional[int] = None,
 ) -> int:
     """
-    Locate the current 1-based sheet row for email_id.
+    Locate the current 1-based sheet row for order_id (legacy param name: email_id).
     """
     email_id = (email_id or "").strip()
     if not email_id:
-        raise ValueError("email_id is required to locate the sheet row to edit.")
+        raise ValueError("order_id is required to locate the sheet row to edit.")
 
     config = config or load_config()
-    col_name = config.get("columns", "email_id")
     values = sheet.get_all_values()
     if not values:
-        raise LookupError(f"MAIN sheet is empty; cannot find email_id={email_id!r}.")
+        raise LookupError(f"order_level sheet is empty; cannot find order_id={email_id!r}.")
 
-    idx_email = _get_col_idx(values[0], "email_id") - 1
+    idx_email = _get_col_idx(values[0], "order_id") - 1
 
     for row_offset, row in enumerate(values[1:], start=2):
         cell = row[idx_email].strip() if idx_email < len(row) else ""
@@ -89,7 +91,7 @@ def find_row_by_email_id(
             return row_offset
 
     raise LookupError(
-        f"No MAIN row found for email_id={email_id!r} "
+        f"No order_level row found for order_id={email_id!r} "
         f"(known_row={known_row!r}). Cannot safely edit phase/timestamp."
     )
 
@@ -114,6 +116,30 @@ def _resolve_edit_row(
     return row_number
 
 
+def set_active_phase(
+    sheet: gspread.Worksheet,
+    value: str,
+    config=None,
+    *,
+    email_id: Optional[str] = None,
+    row_number: Optional[int] = None,
+) -> int:
+    """Write active_phase (pipeline step or progress / error detail)."""
+    config = config or load_config()
+    row = _resolve_edit_row(sheet, email_id, row_number, config)
+    headers = sheet.row_values(1)
+    col_idx = _get_col_idx(headers, "active_phase")
+    text = str(value or "").strip()
+    safe_update_cell(sheet, row, col_idx, text)
+    logger.info(
+        "active_phase order_id=%s row %s -> %s",
+        email_id or "(none)",
+        row,
+        text,
+    )
+    return row
+
+
 def set_robot_phase(
     sheet: gspread.Worksheet,
     phase: str,
@@ -123,30 +149,13 @@ def set_robot_phase(
     email_id: Optional[str] = None,
     row_number: Optional[int] = None,
 ) -> int:
-    """
-    Write ROBOT_PHASE as 'PHASE' or 'PHASE - detail'.
-    Locates the target by email_id (preferred) so inserts cannot retarget the write.
-    Examples: PROCESSING - Logging in | ERROR - Missing CSV | FINISHED
-    Returns the 1-based row that was updated.
-    """
-    config = config or load_config()
-    row = _resolve_edit_row(sheet, email_id, row_number, config)
-    headers = sheet.row_values(1)
-
-    col_idx = _get_col_idx(headers, "robot_phase")
-
+    """Legacy API: maps to active_phase as 'PHASE' or 'PHASE - detail'."""
     text = phase.strip()
     if detail and detail.upper() != text.upper():
         text = f"{text} - {detail}"
-
-    safe_update_cell(sheet, row, col_idx, text)
-    logger.info(
-        "ROBOT_PHASE email_id=%s row %s -> %s",
-        email_id or "(none)",
-        row,
-        text,
+    return set_active_phase(
+        sheet, text, config, email_id=email_id, row_number=row_number
     )
-    return row
 
 
 def set_batch_name(
@@ -157,20 +166,47 @@ def set_batch_name(
     email_id: Optional[str] = None,
     row_number: Optional[int] = None,
 ) -> int:
-    """
-    Write BATCH_NAME (MAIN column P) — saved cart name chosen by the robot.
-    Returns the 1-based row that was updated.
-    """
+    """Write saved_card_name — webshop saved cart name chosen by the robot."""
     config = config or load_config()
     row = _resolve_edit_row(sheet, email_id, row_number, config)
     headers = sheet.row_values(1)
 
-    col_idx = _get_col_idx(headers, "batch_name", fallback_idx=16)
+    col_idx = _get_col_idx(headers, "saved_card_name", fallback_idx=11)
 
     text = str(batch_name or "").strip()
     safe_update_cell(sheet, row, col_idx, text)
     logger.info(
-        "BATCH_NAME email_id=%s row %s -> %s",
+        "saved_card_name order_id=%s row %s -> %s",
+        email_id or "(none)",
+        row,
+        text,
+    )
+    return row
+
+
+def set_order_phase(
+    sheet: gspread.Worksheet,
+    phase: str,
+    config=None,
+    *,
+    email_id: Optional[str] = None,
+    row_number: Optional[int] = None,
+) -> int:
+    """Write phase — only IN PROGRESS | READY | DONE | ERROR."""
+    config = config or load_config()
+    row = _resolve_edit_row(sheet, email_id, row_number, config)
+    headers = sheet.row_values(1)
+    col_idx = _get_col_idx(headers, "phase")
+    text = phase.strip()
+    if text and text not in ORDER_PHASE.ALL:
+        logger.warning(
+            "phase=%r is not in ORDER_PHASE dictionary %s; writing anyway.",
+            text,
+            sorted(ORDER_PHASE.ALL),
+        )
+    safe_update_cell(sheet, row, col_idx, text)
+    logger.info(
+        "phase order_id=%s row %s -> %s",
         email_id or "(none)",
         row,
         text,
@@ -186,26 +222,10 @@ def set_manual_phase(
     email_id: Optional[str] = None,
     row_number: Optional[int] = None,
 ) -> int:
-    """
-    Write MANUAL_PHASE to an exact dropdown value (e.g. FINISHED).
-    Locates the target by email_id (preferred) so inserts cannot retarget the write.
-    Returns the 1-based row that was updated.
-    """
-    config = config or load_config()
-    row = _resolve_edit_row(sheet, email_id, row_number, config)
-    headers = sheet.row_values(1)
-
-    col_idx = _get_col_idx(headers, "manual_phase")
-
-    text = phase.strip()
-    safe_update_cell(sheet, row, col_idx, text)
-    logger.info(
-        "MANUAL_PHASE email_id=%s row %s -> %s",
-        email_id or "(none)",
-        row,
-        text,
+    """Alias for set_order_phase (legacy name)."""
+    return set_order_phase(
+        sheet, phase, config, email_id=email_id, row_number=row_number
     )
-    return row
 
 
 def set_timestamp_processed_at(
@@ -216,27 +236,23 @@ def set_timestamp_processed_at(
     row_number: Optional[int] = None,
     when: Optional[datetime] = None,
 ) -> Tuple[str, int]:
-    """
-    Write TIMESTAMP_PROCESSED_AT (column K) when a row starts processing.
-    Locates the target by email_id (preferred) so inserts cannot retarget the write.
-    Returns (timestamp string written, 1-based row updated).
-    """
+    """Write timestamp_bot_done (ISO UTC) when the bot finishes or errors."""
     config = config or load_config()
     row = _resolve_edit_row(sheet, email_id, row_number, config)
-    stamp = (when or datetime.now()).strftime("%Y-%m-%d %H:%M:%S")
+    moment = when or datetime.now(timezone.utc)
+    if moment.tzinfo is None:
+        moment = moment.replace(tzinfo=timezone.utc)
+    stamp = moment.isoformat(timespec="seconds").replace("+00:00", "Z")
     headers = sheet.row_values(1)
-    col_idx = _get_col_idx(headers, "timestamp_processed_at", fallback_idx=12)
+    col_idx = _get_col_idx(headers, "timestamp_bot_done", fallback_idx=10)
     safe_update_cell(sheet, row, col_idx, stamp)
     logger.info(
-        "TIMESTAMP_PROCESSED_AT email_id=%s row %s -> %s",
+        "timestamp_bot_done order_id=%s row %s -> %s",
         email_id or "(none)",
         row,
         stamp,
     )
     return stamp, row
-
-
-WEBSHOP_STATUS_OK = "exist"
 
 
 def _normalize_material(value: str) -> str:
@@ -257,23 +273,22 @@ def set_webshop_item_status(
     config=None,
 ) -> int:
     """
-    Write WEBSHOP_ITEM_STATUS on every ITEMS row of email_id: the webshop error
-    text for refused materials, WEBSHOP_STATUS_OK for the rest.
-    Returns the number of rows updated.
+    Update item_status on item_level rows for order_id after webshop upload.
+    Refused materials get the webshop error text; accepted rows get WEBSHOP_STATUS_OK.
     """
     email_id = (email_id or "").strip()
     if not email_id:
-        raise ValueError("email_id is required to write WEBSHOP_ITEM_STATUS.")
+        raise ValueError("order_id is required to write item_status after upload.")
 
     values = items_sheet.get_all_values()
     if not values:
-        raise LookupError("ITEMS sheet is empty; cannot write WEBSHOP_ITEM_STATUS.")
+        raise LookupError("item_level sheet is empty; cannot write item_status.")
 
     headers = values[0]
-    status_col = _get_col_idx(headers, "webshop_item_status")
-    idx_email = _get_col_idx(headers, "email_id") - 1
-    idx_item = _get_col_idx(headers, "item_name") - 1
-    idx_status = _get_col_idx(headers, "item_status") - 1
+    status_col = _get_col_idx(headers, "item_status")
+    idx_email = _get_col_idx(headers, "order_id") - 1
+    idx_item = _get_col_idx(headers, "item_number") - 1
+    idx_status = status_col - 1
 
     # BigQuery rewrites ITEM_NAME to the replacement material, while the webshop
     # reports the original code from the attachment CSV — match on both.
@@ -290,7 +305,7 @@ def set_webshop_item_status(
         keys = [_normalize_material(item_name)]
         keys += [_normalize_material(code) for code in _replacement_codes(item_status)]
 
-        text = WEBSHOP_STATUS_OK
+        text = WEBSHOP_ITEM_STATUS_OK
         for key in keys:
             if key in failed:
                 text = failed[key]
@@ -303,7 +318,7 @@ def set_webshop_item_status(
 
     if not updates:
         logger.warning(
-            "No ITEMS row found for email_id=%s; WEBSHOP_ITEM_STATUS not written.",
+            "No item_level row found for order_id=%s; item_status not written.",
             email_id,
         )
         return 0
@@ -311,14 +326,14 @@ def set_webshop_item_status(
     unmatched = sorted(set(failed) - matched)
     if unmatched:
         logger.warning(
-            "Webshop refused material(s) with no ITEMS row for email_id=%s: %s",
+            "Webshop refused material(s) with no item_level row for order_id=%s: %s",
             email_id,
             ", ".join(unmatched),
         )
 
     items_sheet.batch_update(updates)
     logger.info(
-        "WEBSHOP_ITEM_STATUS email_id=%s -> %s row(s), %s refused by webshop.",
+        "item_status (webshop) order_id=%s -> %s row(s), %s refused by webshop.",
         email_id,
         len(updates),
         len(matched),
@@ -326,37 +341,112 @@ def set_webshop_item_status(
     return len(updates)
 
 
-def find_pending_orders(sheet: gspread.Worksheet,config=None) -> pd.DataFrame:
+def _apply_order_column_aliases(full_df: pd.DataFrame) -> pd.DataFrame:
+    """Expose legacy pandas field names used by order_helper (email_id, client_number, …)."""
+    alias_to_internal = {
+        "order_id": "email_id",
+        "customer_number": "client_number",
+        "customer_name": "client_name",
+        "order_csv": "attachments_path",
+    }
+    for source, target in alias_to_internal.items():
+        if source in full_df.columns and target not in full_df.columns:
+            full_df[target] = full_df[source]
+    if "email_id" not in full_df.columns and "order_id" in full_df.columns:
+        full_df["email_id"] = full_df["order_id"]
+    return full_df
+
+
+def _legacy_main_pending_mask(full_df: pd.DataFrame, pipeline_valid: str) -> pd.Series:
+    """Old MAIN: MANUAL_PHASE=PROCESSING, ROBOT_PHASE empty, ACTIVE_PHASE=5_VALID."""
+    manual = full_df.get("manual_phase", pd.Series("", index=full_df.index)).astype(str)
+    robot = full_df.get("robot_phase", pd.Series("", index=full_df.index)).astype(str)
+    active = full_df.get("active_phase", pd.Series("", index=full_df.index)).astype(str)
+    return (
+        manual.str.strip().str.upper().eq("PROCESSING")
+        & robot.str.strip().eq("")
+        & active.str.strip().str.upper().eq(pipeline_valid.strip().upper())
+    )
+
+
+def find_pending_orders(sheet: gspread.Worksheet, config=None) -> pd.DataFrame:
     """
-    Start condition: MANUAL_PHASE == PROCESSING, ROBOT_PHASE == "", ACTIVE_PHASE == 5_VALID.
+    order_level pick-up: phase == READY (any active_phase).
+    Skips IN PROGRESS / DONE / ERROR.
     """
+    config = config or load_config()
 
     values = sheet.get_all_values()
     if not values or len(values) < 2:
-        logger.warning("MAIN sheet is empty.")
+        logger.warning("order_level sheet is empty.")
         return pd.DataFrame()
 
     headers = values[0]
-    
+    header_preview = [str(h).strip() for h in headers[:5]]
+    logger.debug("order_level headers (first 5): %s", header_preview)
+
     full_df = pd.DataFrame(values[1:], columns=[str(h).strip().lower() for h in headers])
     full_df["row_number"] = full_df.index + 2
+    full_df = _apply_order_column_aliases(full_df)
 
+    phase_col = full_df.get("phase", full_df.get("manual_phase", pd.Series("", index=full_df.index))).astype(str)
 
-    manual_col = full_df.get("manual_phase", pd.Series("", index=full_df.index)).astype(str)
-    robot_col = full_df.get("robot_phase", pd.Series("", index=full_df.index)).astype(str)
-    active_col = full_df.get("active_phase", pd.Series("", index=full_df.index)).astype(str)
+    pickup_phase = bot_pickup_phase(config)
+    pipeline_valid = pipeline_valid_active_phase(config)
 
-    robot_stripped = robot_col.str.strip()
-    pending_mask = (
-        (manual_col.str.strip().str.upper() == "PROCESSING") &
-        (robot_stripped.eq("") | robot_stripped.str.upper().eq("READY")) &
-        (active_col.str.strip().str.upper() == "5_VALID")
-    )
-    pending_orders_df = full_df[pending_mask]
+    phase_stripped = phase_col.str.strip()
+    pending_mask = phase_stripped == pickup_phase
+    if not pending_mask.any():
+        pending_mask = phase_stripped.str.upper() == pickup_phase.strip().upper()
+    pending_orders_df = full_df[pending_mask].copy()
+    if "order_id" in pending_orders_df.columns:
+        has_id = pending_orders_df["order_id"].astype(str).str.strip() != ""
+        dropped = (~has_id).sum()
+        if dropped:
+            logger.warning("Skipped %s READY row(s) with empty order_id.", int(dropped))
+        pending_orders_df = pending_orders_df[has_id]
+    source = "order_level"
+
+    if pending_orders_df.empty and accept_legacy_main_row(config):
+        legacy_mask = _legacy_main_pending_mask(full_df, pipeline_valid)
+        pending_orders_df = full_df[legacy_mask]
+        if not pending_orders_df.empty:
+            source = "legacy MAIN"
+            logger.warning(
+                "Picked %s row(s) via legacy MAIN rule; migrate to phase=READY on order_level.",
+                len(pending_orders_df),
+            )
+
+    if pending_orders_df.empty and len(full_df) > 0:
+        sample_phases = sorted({p for p in phase_stripped.unique() if str(p).strip()})
+        ready_like = phase_stripped.str.strip().str.upper().eq(pickup_phase.upper()).sum()
+        logger.info(
+            "No pending rows on tab %r (looking for phase=%r). "
+            "Rows in sheet: %s; phase values seen: %s; case-insensitive READY count: %s.",
+            sheet.title,
+            pickup_phase,
+            len(full_df),
+            sample_phases[:15],
+            int(ready_like),
+        )
+        if "phase" not in full_df.columns and "manual_phase" not in full_df.columns:
+            logger.error(
+                "Missing 'phase' column on %r — bot may be on the wrong tab (e.g. item_level). "
+                "Headers: %s",
+                sheet.title,
+                header_preview,
+            )
+        elif ready_like and pending_orders_df.empty:
+            logger.warning(
+                "READY-like values exist but did not match exactly %r (check spaces/casing).",
+                pickup_phase,
+            )
 
     logger.info(
-        "Found %s pending order row(s) (manual_phase=PROCESSING, robot_phase empty or READY, active_phase=5_VALID).",
+        "Found %s pending order row(s) from %s (phase=%r).",
         len(pending_orders_df),
+        source,
+        pickup_phase,
     )
     return pending_orders_df
 
@@ -593,28 +683,66 @@ def _download_drive_file(
     return target
 
 
-def extract_order_payload(
-    sheet: gspread.Worksheet,
-    order: pd.Series,
-    sheets_client: gspread.Client,
+def load_order_items_dataframe(
+    items_sheet: gspread.Worksheet,
+    order_id: str,
     config=None,
-) -> Tuple[pd.Series, Path]:
-    """Download / export attachment CSV for the order row and return path."""
-    config = config or load_config()
-    downloads = config.get("webshop", "downloads_dir")
+) -> pd.DataFrame:
+    """
+    Load item_number / item_qty from item_level for one order_id.
+    Returns columns Item number, Order amount (webshop batch format).
+    """
+    order_id = (order_id or "").strip()
+    if not order_id:
+        raise ValueError("order_id is required to load item_level rows.")
 
-    order["row_number"] = set_robot_phase(
-        sheet,
-        "PROCESSING",
-        "Downloading attachment CSV",
-        config,
-        email_id=order.email_id,
-        row_number=order.row_number,
+    values = items_sheet.get_all_values()
+    if not values or len(values) < 2:
+        raise LookupError("item_level sheet is empty.")
+
+    headers = values[0]
+    df = pd.DataFrame(values[1:], columns=[str(h).strip().lower() for h in headers])
+
+    if "order_id" in df.columns:
+        id_col = "order_id"
+    elif "email_id" in df.columns:
+        id_col = "email_id"
+    else:
+        raise KeyError("item_level has no order_id column.")
+
+    mask = df[id_col].astype(str).str.strip() == order_id
+    subset = df.loc[mask].copy()
+    if subset.empty:
+        raise LookupError(f"No item_level rows for order_id={order_id!r}.")
+
+    def _col(name: str, aliases: list[str]) -> str:
+        if name in subset.columns:
+            return name
+        for alt in aliases:
+            if alt in subset.columns:
+                return alt
+        raise KeyError(
+            f"item_level missing {name!r} (tried {aliases}); headers={list(df.columns)!r}."
+        )
+
+    item_col = _col("item_number", ["item_name"])
+    qty_col = _col("item_qty", ["item_count"])
+
+    items = pd.DataFrame(
+        {
+            "Item number": subset[item_col].astype(str).str.strip(),
+            "Order amount": subset[qty_col].astype(str).str.strip(),
+        }
     )
-    path = download_attachment(
-        order.attachments_path,
-        downloads,
-        sheets_client=sheets_client,
-        spreadsheet=sheet.spreadsheet,
+    items = items[(items["Item number"] != "") & (items["Order amount"] != "")]
+    if items.empty:
+        raise ValueError(
+            f"item_level rows for order_id={order_id!r} have no item_number/item_qty."
+        )
+
+    logger.info(
+        "Loaded %s item_level row(s) for order_id=%s.",
+        len(items),
+        order_id,
     )
-    return order, path
+    return items.reset_index(drop=True)

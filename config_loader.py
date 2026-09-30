@@ -55,6 +55,44 @@ def alert_notify_emails(config: configparser.ConfigParser) -> List[str]:
     return emails
 
 
+def order_level_sheet_name(config: configparser.ConfigParser) -> str:
+    from webshop.config import SHEET_ORDER
+
+    return config.get("spreadsheets", "main_sheet_name", fallback=SHEET_ORDER).strip() or SHEET_ORDER
+
+
+def item_level_sheet_name(config: configparser.ConfigParser) -> str:
+    from webshop.config import SHEET_ITEMS
+
+    return config.get("spreadsheets", "items_sheet_name", fallback=SHEET_ITEMS).strip() or SHEET_ITEMS
+
+
+def bot_pickup_phase(config: configparser.ConfigParser) -> str:
+    from webshop.config import ORDER_PHASE
+
+    raw = config.get("phases", "bot_ready_phase", fallback="").strip()
+    if raw:
+        return raw
+    legacy = config.get("phases", "bot_ready_active_phase", fallback="").strip()
+    if legacy and legacy != ORDER_PHASE.READY:
+        return legacy
+    return ORDER_PHASE.READY
+
+
+def pipeline_valid_active_phase(config: configparser.ConfigParser) -> str:
+    from webshop.config import PIPELINE_PHASE
+
+    return (
+        config.get("phases", "pipeline_valid", fallback=PIPELINE_PHASE.VALID).strip()
+        or PIPELINE_PHASE.VALID
+    )
+
+
+def accept_legacy_main_row(config: configparser.ConfigParser) -> bool:
+    """If true, also pick old MAIN rows (manual=PROCESSING, robot empty, active=5_VALID)."""
+    return config.getboolean("phases", "accept_legacy_main_row", fallback=False)
+
+
 def ensure_runtime_dirs(config: configparser.ConfigParser) -> None:
     Path(config.get("webshop", "downloads_dir")).mkdir(parents=True, exist_ok=True)
     Path(

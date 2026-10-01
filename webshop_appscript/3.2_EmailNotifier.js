@@ -36,10 +36,13 @@ const EmailNotifier = {
   // =======================================================================================
 
   // ID folderu na Google Drive z oficjalnym logo HIAB
-  LOGO_FOLDER_ID: "1nOTugI-yoHVhZMk9bLwSBiiuHZnURx2k",
-  
-  // Nazwa pliku graficznego z logo tekstowym HIAB w folderze na Drive
-  LOGO_FILE_NAME: "hiab-text-logo.png",
+  get logoFolderId() {
+    return (typeof CONFIG !== "undefined" && CONFIG.LOGO_FOLDER_ID) || "1gt3Zvlq2Et7BlEhdUAJ5e0QmtnrakMdv";
+  },
+
+  get logoFileName() {
+    return (typeof CONFIG !== "undefined" && CONFIG.LOGO_FILE_NAME) || "hiab-text-logo.png";
+  },
   
   // Nazwa nadawcy wyświetlana odbiorcom w programach pocztowych
   SENDER_NAME: "Hiab Deals Automation",
@@ -70,8 +73,8 @@ const EmailNotifier = {
     if (inlineImages['hiabLogo']) return true;
     try {
       if (typeof DriveApp !== 'undefined' && DriveApp.getFolderById) {
-        const folder = DriveApp.getFolderById(this.LOGO_FOLDER_ID);
-        const files = folder.getFilesByName(this.LOGO_FILE_NAME);
+        const folder = DriveApp.getFolderById(this.logoFolderId);
+        const files = folder.getFilesByName(this.logoFileName);
         if (files && files.hasNext()) {
           inlineImages['hiabLogo'] = files.next().getBlob();
           return true;
@@ -804,7 +807,7 @@ const EmailNotifier = {
           <p style="margin: 4px 0 0 0; font-size: 13px; color: #4a5560; line-height: 1.5;">
             ${info.customerEmail
               ? `Confirmation e-mail sent to <strong style="color: #2f3941;">${info.customerEmail}</strong>.`
-              : "No customer e-mail in column N — only this internal summary was sent."}
+              : "No customer e-mail in column G — only this internal summary was sent."}
           </p>
         </div>
       `;

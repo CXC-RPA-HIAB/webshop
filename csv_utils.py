@@ -8,6 +8,7 @@ from logging_setup import get_logger
 logger = get_logger()
 
 DEFAULT_BATCH_MAX_ROWS = 100
+BATCH_CSV_COLUMNS = ("Item number", "Order amount")
 
 
 @dataclass
@@ -25,14 +26,13 @@ class BatchPayload:
 
 
 def _normalize_items_dataframe(df: pd.DataFrame) -> pd.DataFrame:
-    """Webshop Batch Order columns: Item number, Order amount."""
-    required = {"Item number", "Order amount"}
-    if required.issubset(df.columns):
-        out = df[list(required)].copy()
-    else:
+    """Col1 part (Item number), col2 qty (Order amount)."""
+    part_col, qty_col = BATCH_CSV_COLUMNS
+    if not {part_col, qty_col}.issubset(df.columns):
         raise ValueError(
-            f"Items dataframe must have columns {required!r}, got {list(df.columns)!r}."
+            f"Items dataframe must have columns {BATCH_CSV_COLUMNS!r}, got {list(df.columns)!r}."
         )
+    out = df[[part_col, qty_col]].copy()
     out["Item number"] = out["Item number"].astype(str).str.strip()
     out["Order amount"] = out["Order amount"].astype(str).str.strip()
     out = out[(out["Item number"] != "") & (out["Order amount"] != "")]
@@ -47,7 +47,7 @@ def _write_batch_files(
 ) -> list[Path]:
     batch_files: list[Path] = []
     for i in range(0, len(df), batch_size):
-        chunk = df.iloc[i : i + batch_size]
+        chunk = df.iloc[i : i + batch_size][list(BATCH_CSV_COLUMNS)]
         target = out_dir / f"{stem}_batch_{i // batch_size + 1}.csv"
         chunk.to_csv(target, index=False)
         batch_files.append(target)

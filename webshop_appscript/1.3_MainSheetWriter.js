@@ -7,6 +7,36 @@ const SheetHelper = {
     ORDER_CSV: 8
   },
 
+  resolveOrderLevelSheet: function(ss) {
+    const configured = (CONFIG.SHEETS && CONFIG.SHEETS.MAIN) || "order_level";
+    const candidates = [configured, "order_level", "MAIN", "Main"];
+    const seen = {};
+    for (let i = 0; i < candidates.length; i++) {
+      const name = String(candidates[i] || "").trim();
+      if (!name || seen[name]) continue;
+      seen[name] = true;
+      const sheet = ss.getSheetByName(name);
+      if (sheet) return sheet;
+    }
+    const names = ss.getSheets().map(function(s) { return s.getName(); }).join(", ");
+    throw new Error("order_level sheet not found. Tried: " + candidates.join(", ") + ". Available: " + names);
+  },
+
+  resolveItemLevelSheet: function(ss) {
+    const configured = (CONFIG.SHEETS && CONFIG.SHEETS.ITEMS) || "item_level";
+    const candidates = [configured, "item_level", "ITEMS", "Items"];
+    const seen = {};
+    for (let i = 0; i < candidates.length; i++) {
+      const name = String(candidates[i] || "").trim();
+      if (!name || seen[name]) continue;
+      seen[name] = true;
+      const sheet = ss.getSheetByName(name);
+      if (sheet) return sheet;
+    }
+    const names = ss.getSheets().map(function(s) { return s.getName(); }).join(", ");
+    throw new Error("item_level sheet not found. Tried: " + candidates.join(", ") + ". Available: " + names);
+  },
+
   ensureOrderHeaders: function(mainSheet) {
     const lastColumn = CONFIG.ORDER_HEADERS.length;
     const maxColumns = mainSheet.getMaxColumns();
@@ -28,7 +58,7 @@ const SheetHelper = {
 
   appendInitialRow: function(mainRecord) {
     const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
-    const mainSheet = ss.getSheetByName(CONFIG.SHEETS.MAIN);
+    const mainSheet = this.resolveOrderLevelSheet(ss);
     this.ensureOrderHeaders(mainSheet);
 
     mainSheet.insertRowAfter(1);
@@ -61,7 +91,7 @@ const SheetHelper = {
    */
   updateStatus: function(rowIndex, activePhase, phase) {
     const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
-    const sheet = ss.getSheetByName(CONFIG.SHEETS.MAIN);
+    const sheet = this.resolveOrderLevelSheet(ss);
 
     const activePhaseStr = String(activePhase);
     let phaseValue = phase;
@@ -76,7 +106,7 @@ const SheetHelper = {
 
   updateCell: function(rowIndex, colIndex, value) {
     const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
-    const sheet = ss.getSheetByName(CONFIG.SHEETS.MAIN);
+    const sheet = this.resolveOrderLevelSheet(ss);
 
     sheet.getRange(rowIndex, colIndex).setValue(value);
     SpreadsheetApp.flush();
@@ -85,7 +115,7 @@ const SheetHelper = {
   updateSmartChip: function(rowIndex, colIndex, fileUrl) {
     try {
       const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
-      const sheetId = ss.getSheetByName(CONFIG.SHEETS.MAIN).getSheetId();
+      const sheetId = this.resolveOrderLevelSheet(ss).getSheetId();
 
       const request = {
         updateCells: {
@@ -116,14 +146,14 @@ const SheetHelper = {
       Sheets.Spreadsheets.batchUpdate({ requests: [request] }, CONFIG.SPREADSHEET_ID);
     } catch (apiError) {
       const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
-      const sheet = ss.getSheetByName(CONFIG.SHEETS.MAIN);
+      const sheet = this.resolveOrderLevelSheet(ss);
       sheet.getRange(rowIndex, colIndex).setFormula(`=HYPERLINK("${fileUrl}", "📄 View File")`);
     }
   },
 
   writeToSheets: function(emailId, attachmentName, parsedItems) {
     const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
-    const itemsSheet = ss.getSheetByName(CONFIG.SHEETS.ITEMS);
+    const itemsSheet = this.resolveItemLevelSheet(ss);
 
     if (!itemsSheet) {
       throw new Error(`Could not find sheet named: ${CONFIG.SHEETS.ITEMS}`);
@@ -151,7 +181,7 @@ const SheetHelper = {
 
   logErrorToMain: function(emailId, exactManualPhase, activePhaseWithError) {
     const ss = SpreadsheetApp.openById(CONFIG.SPREADSHEET_ID);
-    const mainSheet = ss.getSheetByName(CONFIG.SHEETS.MAIN);
+    const mainSheet = this.resolveOrderLevelSheet(ss);
     this.ensureOrderHeaders(mainSheet);
 
     mainSheet.insertRowAfter(1);

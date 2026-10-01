@@ -70,7 +70,7 @@ const ItemsReport = {
       rejectedCount: 0
     };
 
-    const itemsSheet = ss.getSheetByName(CONFIG.SHEETS.ITEMS);
+    const itemsSheet = SheetHelper.resolveItemLevelSheet(ss);
     if (!itemsSheet) return report;
 
     ItemsSheetWriter.ensureColumns(itemsSheet);

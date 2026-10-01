@@ -86,4 +86,4 @@ COLUMN_ALIASES: Dict[str, List[str]] = {
 }
 
 WEBSHOP_ITEM_STATUS_OK = "exist"
-ITEM_STATUS_VALID = "valid"
+ITEM_STATUS_VALID = "exist"
